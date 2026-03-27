@@ -1,0 +1,31 @@
+<graph id="stamps-export">
+  <version>1.0</version>
+
+  <node id="ReadCoregProduct">
+    <operator>Read</operator>
+    <sources />
+    <parameters class="com.bc.ceres.binding.dom.XppDomElement">
+      <file>${coregFile}</file>
+    </parameters>
+  </node>
+
+  <node id="ReadIfgProduct">
+    <operator>Read</operator>
+    <sources />
+    <parameters class="com.bc.ceres.binding.dom.XppDomElement">
+      <file>${ifgFile}</file>
+    </parameters>
+  </node>
+
+  <node id="StampsExport">
+    <operator>StampsExport</operator>
+    <sources>
+      <sourceProduct refid="ReadCoregProduct" />
+      <sourceProduct.1 refid="ReadIfgProduct" />
+    </sources>
+    <parameters class="com.bc.ceres.binding.dom.XppDomElement">
+      <targetFolder>${outputDir}</targetFolder>
+      <psiFormat>true</psiFormat>
+    </parameters>
+  </node>
+</graph>

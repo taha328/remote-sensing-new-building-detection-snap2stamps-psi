@@ -1,0 +1,104 @@
+project: casablanca-builtup
+
+aoi:
+  name: casablanca-city
+  bbox: [-7.80, 33.40, -7.45, 33.65]
+  crs: EPSG:4326
+
+periods:
+  - id: "2023_2025"
+    before:
+      start: "2023-06-01"
+      end: "2023-09-30"
+    after:
+      start: "2025-06-01"
+      end: "2025-09-30"
+
+sentinel1:
+  collection: sentinel-1-rtc
+  platform: SENTINEL-1A
+  instrument_mode: IW
+  polarizations: [vv, vh]
+  orbit_state:
+  asset_names:
+    vv: vv
+    vh: vh
+
+sentinel2:
+  collection: sentinel-2-l2a
+  max_cloud_cover: 80.0
+  asset_names:
+    blue: B02
+    green: B03
+    red: B04
+    nir: B08
+    swir1: B11
+    scl: SCL
+  clear_scl_classes: [2, 4, 5, 6, 7]
+  min_clear_observations: 2
+  min_clear_fraction: 0.15
+  support_score_min: 2
+  thresholds:
+    ndvi_after_max: 0.35
+    mndwi_after_max: 0.0
+    ndbi_after_min: -0.02
+    delta_ndbi_min: 0.02
+    bsi_after_min: 0.02
+    delta_bsi_min: 0.01
+  use_bsi: true
+  allow_unavailable: true
+  strong_override:
+    enabled: true
+    vv_ratio_min: 2.0
+    vh_ratio_min: 1.15
+    pvalue_max: 0.001
+
+grid:
+  crs: EPSG:32629
+  resolution_m: 10.0
+  alignment: edge
+
+detection:
+  alpha: 0.01
+  enl: 4.4
+  vv_ratio_min: 1.5
+  vh_ratio_min: 1.05
+  min_connected_pixels: 4
+  closing_radius_m: 10.0
+
+density:
+  radius_m: 20.0
+  min_density: 0.15
+  min_connected_pixels: 6
+  closing_radius_m: 5.0
+
+polygonization:
+  min_area_ha: 0.05
+  min_compactness: 0.0
+  simplify_tolerance_m: 5.0
+  use_tiled_polygonization: true
+  tile_size_pixels: 4096
+  tile_overlap_pixels: 32
+
+export:
+  raster_driver: GTiff
+  raster_compress: DEFLATE
+  raster_predictor: 2
+  save_intermediates: true
+  vector_formats: [parquet, gpkg]
+
+cache:
+  reuse_manifests: true
+  overwrite: false
+
+dask:
+  enabled: true
+  chunks:
+    x: 2048
+    y: 2048
+  scheduler: threads
+
+run:
+  output_root: runs
+  log_level: INFO
+  write_log_file: true
