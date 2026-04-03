@@ -1,8 +1,8 @@
 import numpy as np
 import xarray as xr
 
-from casablanca_builtup.config import DetectionConfig
-from casablanca_builtup.s1.detection import detect_s1_change
+from aoi_builtup.config import DetectionConfig
+from aoi_builtup.s1.detection import detect_s1_change
 
 
 def _dataset(vv: np.ndarray, vh: np.ndarray) -> xr.Dataset:

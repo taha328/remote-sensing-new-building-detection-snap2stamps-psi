@@ -1,8 +1,8 @@
 import numpy as np
 import xarray as xr
 
-from casablanca_builtup.config import PolygonizationConfig
-from casablanca_builtup.postprocess.vectorize import polygonize_mask
+from aoi_builtup.config import PolygonizationConfig
+from aoi_builtup.postprocess.vectorize import polygonize_mask
 
 
 def test_polygonize_mask_returns_expected_area() -> None:

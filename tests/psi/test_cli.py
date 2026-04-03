@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from casablanca_psi.cli import app
+from aoi_psi.cli import app
 
 
 def test_python_module_cli_help_runs() -> None:
@@ -13,7 +13,7 @@ def test_python_module_cli_help_runs() -> None:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(root / "src")
     result = subprocess.run(
-        [sys.executable, "-m", "casablanca_psi.cli", "--help"],
+        [sys.executable, "-m", "aoi_psi.cli", "--help"],
         cwd=root,
         env=env,
         capture_output=True,

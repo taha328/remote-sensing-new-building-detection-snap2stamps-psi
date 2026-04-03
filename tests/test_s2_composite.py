@@ -7,8 +7,8 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from casablanca_builtup.config import DaskConfig, ExportConfig, Sentinel2Config
-from casablanca_builtup.s2 import composite as composite_module
+from aoi_builtup.config import DaskConfig, ExportConfig, Sentinel2Config
+from aoi_builtup.s2 import composite as composite_module
 
 
 class _GeoBox:

@@ -4,11 +4,11 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from casablanca_psi.cdpsi import plan_cdpsi_stack
-from casablanca_psi.artifact_lifecycle import CleanupWarning
-from casablanca_psi.config import load_config
-from casablanca_psi.manifests import SlcScene, StackManifest
-from casablanca_psi.pipeline import run_pipeline
+from aoi_psi.cdpsi import plan_cdpsi_stack
+from aoi_psi.artifact_lifecycle import CleanupWarning
+from aoi_psi.config import load_config
+from aoi_psi.manifests import SlcScene, StackManifest
+from aoi_psi.pipeline import run_pipeline
 
 
 def _build_manifest() -> StackManifest:
@@ -78,19 +78,19 @@ def test_run_pipeline_persists_runtime_policies(tmp_path, monkeypatch) -> None:
     run_dir = tmp_path / "runs_psi" / "group-001" / "attempt-001"
     manifest = _build_manifest()
 
-    monkeypatch.setattr("casablanca_psi.pipeline.configure_logging", lambda *args, **kwargs: None)
-    monkeypatch.setattr("casablanca_psi.stamps.StaMPSRunner._resolve_snaphu_binary", lambda self: Path("/tmp/snaphu"))
-    monkeypatch.setattr("casablanca_psi.stamps.StaMPSRunner._resolve_triangle_binary", lambda self: Path("/tmp/triangle"))
-    monkeypatch.setattr("casablanca_psi.pipeline.load_aoi_geometry", lambda *_args, **_kwargs: SimpleNamespace(wkt="POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))"))
-    monkeypatch.setattr("casablanca_psi.pipeline.build_manifests", lambda *_args, **_kwargs: {manifest.stack_id: manifest})
-    monkeypatch.setattr("casablanca_psi.pipeline.download_stack_scenes", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("aoi_psi.pipeline.configure_logging", lambda *args, **kwargs: None)
+    monkeypatch.setattr("aoi_psi.stamps.StaMPSRunner._resolve_snaphu_binary", lambda self: Path("/tmp/snaphu"))
+    monkeypatch.setattr("aoi_psi.stamps.StaMPSRunner._resolve_triangle_binary", lambda self: Path("/tmp/triangle"))
+    monkeypatch.setattr("aoi_psi.pipeline.load_aoi_geometry", lambda *_args, **_kwargs: SimpleNamespace(wkt="POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))"))
+    monkeypatch.setattr("aoi_psi.pipeline.build_manifests", lambda *_args, **_kwargs: {manifest.stack_id: manifest})
+    monkeypatch.setattr("aoi_psi.pipeline.download_stack_scenes", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
-        "casablanca_psi.pipeline.SnapGraphRunner.run_stack",
+        "aoi_psi.pipeline.SnapGraphRunner.run_stack",
         lambda *_args, **_kwargs: SimpleNamespace(stamps_export_dir=Path("/tmp/stamps_export")),
     )
 
     context = run_pipeline(
-        Path("configs/psi_casablanca_slc_minimal.yaml"),
+        Path("configs/aoi_psi_slc_minimal.yaml"),
         stop_after="snap_preprocess",
         run_dir=run_dir,
     )
@@ -98,7 +98,7 @@ def test_run_pipeline_persists_runtime_policies(tmp_path, monkeypatch) -> None:
     report = json.loads((context.reports_dir / "run_report.json").read_text(encoding="utf-8"))
 
     assert report["status"] == "completed"
-    assert report["runtime_policies"]["snap_gpt"]["gpt_vmoptions_path"] == "/Applications/esa-snap/bin/gpt.vmoptions"
+    assert report["runtime_policies"]["snap_gpt"]["gpt_vmoptions_path"] == "/opt/snap/bin/gpt.vmoptions"
     assert "-Xmx8G" in report["runtime_policies"]["snap_gpt"]["effective_java_options"]
     assert report["runtime_policies"]["stamps"]["asc_rel147_vv"]["mode"] == "serial_patch_batches_then_serial_merge"
     assert report["runtime_policies"]["stamps"]["asc_rel147_vv"]["effective_parallel_patch_workers"] == 1
@@ -116,12 +116,12 @@ def test_run_pipeline_persists_snap_cleanup_warnings(tmp_path, monkeypatch) -> N
     run_dir = tmp_path / "runs_psi" / "group-001" / "attempt-001"
     manifest = _build_manifest()
 
-    monkeypatch.setattr("casablanca_psi.pipeline.configure_logging", lambda *args, **kwargs: None)
-    monkeypatch.setattr("casablanca_psi.pipeline.load_aoi_geometry", lambda *_args, **_kwargs: SimpleNamespace(wkt="POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))"))
-    monkeypatch.setattr("casablanca_psi.pipeline.build_manifests", lambda *_args, **_kwargs: {manifest.stack_id: manifest})
-    monkeypatch.setattr("casablanca_psi.pipeline.download_stack_scenes", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("aoi_psi.pipeline.configure_logging", lambda *args, **kwargs: None)
+    monkeypatch.setattr("aoi_psi.pipeline.load_aoi_geometry", lambda *_args, **_kwargs: SimpleNamespace(wkt="POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))"))
+    monkeypatch.setattr("aoi_psi.pipeline.build_manifests", lambda *_args, **_kwargs: {manifest.stack_id: manifest})
+    monkeypatch.setattr("aoi_psi.pipeline.download_stack_scenes", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
-        "casablanca_psi.pipeline.SnapGraphRunner.run_stack",
+        "aoi_psi.pipeline.SnapGraphRunner.run_stack",
         lambda *_args, **_kwargs: SimpleNamespace(
             stamps_export_dir=Path("/tmp/stamps_export"),
             cleanup_warnings=(
@@ -137,7 +137,7 @@ def test_run_pipeline_persists_snap_cleanup_warnings(tmp_path, monkeypatch) -> N
     )
 
     context = run_pipeline(
-        Path("configs/psi_casablanca_slc_minimal.yaml"),
+        Path("configs/aoi_psi_slc_minimal.yaml"),
         stop_after="snap_preprocess",
         run_dir=run_dir,
     )
@@ -154,16 +154,16 @@ def test_run_pipeline_persists_stamps_cleanup_warnings(tmp_path, monkeypatch) ->
     run_dir = tmp_path / "runs_psi" / "group-001" / "attempt-001"
     manifest = _build_manifest()
 
-    monkeypatch.setattr("casablanca_psi.pipeline.configure_logging", lambda *args, **kwargs: None)
-    monkeypatch.setattr("casablanca_psi.pipeline.load_aoi_geometry", lambda *_args, **_kwargs: SimpleNamespace(wkt="POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))"))
-    monkeypatch.setattr("casablanca_psi.pipeline.build_manifests", lambda *_args, **_kwargs: {manifest.stack_id: manifest})
-    monkeypatch.setattr("casablanca_psi.pipeline.download_stack_scenes", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("aoi_psi.pipeline.configure_logging", lambda *args, **kwargs: None)
+    monkeypatch.setattr("aoi_psi.pipeline.load_aoi_geometry", lambda *_args, **_kwargs: SimpleNamespace(wkt="POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))"))
+    monkeypatch.setattr("aoi_psi.pipeline.build_manifests", lambda *_args, **_kwargs: {manifest.stack_id: manifest})
+    monkeypatch.setattr("aoi_psi.pipeline.download_stack_scenes", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
-        "casablanca_psi.pipeline.SnapGraphRunner.run_stack",
+        "aoi_psi.pipeline.SnapGraphRunner.run_stack",
         lambda *_args, **_kwargs: SimpleNamespace(stamps_export_dir=Path("/tmp/stamps_export")),
     )
     monkeypatch.setattr(
-        "casablanca_psi.pipeline.StaMPSRunner.run_stack",
+        "aoi_psi.pipeline.StaMPSRunner.run_stack",
         lambda *_args, **_kwargs: SimpleNamespace(
             ps_points_csv=Path("/tmp/ps_points.csv"),
             ps_timeseries_csv=Path("/tmp/ps_timeseries.csv"),
@@ -180,7 +180,7 @@ def test_run_pipeline_persists_stamps_cleanup_warnings(tmp_path, monkeypatch) ->
     )
 
     context = run_pipeline(
-        Path("configs/psi_casablanca_slc_minimal.yaml"),
+        Path("configs/aoi_psi_slc_minimal.yaml"),
         stop_after="stamps",
         run_dir=run_dir,
     )
@@ -198,21 +198,21 @@ def test_run_pipeline_skips_snap_when_reusable_stamps_outputs_exist(tmp_path, mo
     manifest = _build_manifest()
     export_dir = run_dir / "stamps" / manifest.stack_id / "export"
     _write_emergence_ready_stamps_outputs(export_dir)
-    config = load_config(Path("configs/psi_casablanca_slc_minimal.yaml"))
+    config = load_config(Path("configs/aoi_psi_slc_minimal.yaml"))
     plan = plan_cdpsi_stack(manifest, config.stacks[0], config.psi)
     for subset_plan in plan.subset_runs:
         _write_snap_export(run_dir / "snap" / subset_plan.stack_id / "stamps_export")
 
-    monkeypatch.setattr("casablanca_psi.pipeline.configure_logging", lambda *args, **kwargs: None)
-    monkeypatch.setattr("casablanca_psi.pipeline.load_aoi_geometry", lambda *_args, **_kwargs: SimpleNamespace(wkt="POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))"))
-    monkeypatch.setattr("casablanca_psi.pipeline.build_manifests", lambda *_args, **_kwargs: {manifest.stack_id: manifest})
-    monkeypatch.setattr("casablanca_psi.pipeline.download_stack_scenes", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("aoi_psi.pipeline.configure_logging", lambda *args, **kwargs: None)
+    monkeypatch.setattr("aoi_psi.pipeline.load_aoi_geometry", lambda *_args, **_kwargs: SimpleNamespace(wkt="POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))"))
+    monkeypatch.setattr("aoi_psi.pipeline.build_manifests", lambda *_args, **_kwargs: {manifest.stack_id: manifest})
+    monkeypatch.setattr("aoi_psi.pipeline.download_stack_scenes", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
-        "casablanca_psi.pipeline.SnapGraphRunner.run_stack",
+        "aoi_psi.pipeline.SnapGraphRunner.run_stack",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("SNAP should be skipped when reusable StaMPS outputs exist")),
     )
     monkeypatch.setattr(
-        "casablanca_psi.pipeline.StaMPSRunner.run_stack",
+        "aoi_psi.pipeline.StaMPSRunner.run_stack",
         lambda *_args, **_kwargs: SimpleNamespace(
             ps_points_csv=export_dir / "ps_points.csv",
             ps_timeseries_csv=export_dir / "ps_timeseries.csv",
@@ -221,7 +221,7 @@ def test_run_pipeline_skips_snap_when_reusable_stamps_outputs_exist(tmp_path, mo
     )
 
     context = run_pipeline(
-        Path("configs/psi_casablanca_slc_minimal.yaml"),
+        Path("configs/aoi_psi_slc_minimal.yaml"),
         stop_after="stamps",
         run_dir=run_dir,
     )
@@ -239,19 +239,19 @@ def test_run_pipeline_does_not_skip_snap_for_raw_only_stamps_outputs(tmp_path, m
     export_dir = run_dir / "stamps" / manifest.stack_id / "export"
     _write_raw_only_stamps_outputs(export_dir)
 
-    monkeypatch.setattr("casablanca_psi.pipeline.configure_logging", lambda *args, **kwargs: None)
-    monkeypatch.setattr("casablanca_psi.pipeline.load_aoi_geometry", lambda *_args, **_kwargs: SimpleNamespace(wkt="POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))"))
-    monkeypatch.setattr("casablanca_psi.pipeline.build_manifests", lambda *_args, **_kwargs: {manifest.stack_id: manifest})
-    monkeypatch.setattr("casablanca_psi.pipeline.download_stack_scenes", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("aoi_psi.pipeline.configure_logging", lambda *args, **kwargs: None)
+    monkeypatch.setattr("aoi_psi.pipeline.load_aoi_geometry", lambda *_args, **_kwargs: SimpleNamespace(wkt="POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))"))
+    monkeypatch.setattr("aoi_psi.pipeline.build_manifests", lambda *_args, **_kwargs: {manifest.stack_id: manifest})
+    monkeypatch.setattr("aoi_psi.pipeline.download_stack_scenes", lambda *_args, **_kwargs: None)
     snap_calls: list[str] = []
 
     def fake_snap_run_stack(*_args, **_kwargs):
         snap_calls.append("called")
         return SimpleNamespace(stamps_export_dir=Path("/tmp/stamps_export"), cleanup_warnings=())
 
-    monkeypatch.setattr("casablanca_psi.pipeline.SnapGraphRunner.run_stack", fake_snap_run_stack)
+    monkeypatch.setattr("aoi_psi.pipeline.SnapGraphRunner.run_stack", fake_snap_run_stack)
     monkeypatch.setattr(
-        "casablanca_psi.pipeline.StaMPSRunner.run_stack",
+        "aoi_psi.pipeline.StaMPSRunner.run_stack",
         lambda *_args, **_kwargs: SimpleNamespace(
             ps_points_csv=export_dir / "ps_points.csv",
             ps_timeseries_csv=export_dir / "ps_timeseries.csv",
@@ -260,7 +260,7 @@ def test_run_pipeline_does_not_skip_snap_for_raw_only_stamps_outputs(tmp_path, m
     )
 
     context = run_pipeline(
-        Path("configs/psi_casablanca_slc_minimal.yaml"),
+        Path("configs/aoi_psi_slc_minimal.yaml"),
         stop_after="stamps",
         run_dir=run_dir,
     )

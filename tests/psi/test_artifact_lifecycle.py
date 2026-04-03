@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from casablanca_psi import artifact_lifecycle
-from casablanca_psi.artifact_lifecycle import CleanupWarning, cleanup_stamps_workspace, delete_paths, is_valid_snap_export_dir
+from aoi_psi import artifact_lifecycle
+from aoi_psi.artifact_lifecycle import CleanupWarning, cleanup_stamps_workspace, delete_paths, is_valid_snap_export_dir
 
 
 def test_is_valid_snap_export_dir_requires_non_empty_required_directories(tmp_path) -> None:

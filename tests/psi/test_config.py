@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from casablanca_psi.config import load_config
-from casablanca_psi.run_context import RunContext
+from aoi_psi.config import load_config
+from aoi_psi.run_context import RunContext
 
 
 def test_load_psi_config() -> None:
-    config = load_config(Path("configs/psi_casablanca_slc.yaml"))
-    assert config.project == "Casablanca PSI New-Building Detection"
+    config = load_config(Path("configs/aoi_psi_slc.yaml"))
+    assert config.project == "AOI PSI New-Building Detection"
     assert len(config.stacks) == 2
     assert config.stacks[0].direction == "ascending"
     assert config.stamps.export_script == Path("resources/stamps/export_ps_points.m")
@@ -18,7 +18,7 @@ def test_load_psi_config() -> None:
     assert config.acquisition.s3.endpoint_url == "https://eodata.dataspace.copernicus.eu"
     assert config.acquisition.s3.bucket == "eodata"
     assert config.artifact_lifecycle.enabled is True
-    assert config.snap.gpt_vmoptions_path == Path("/Applications/esa-snap/bin/gpt.vmoptions")
+    assert config.snap.gpt_vmoptions_path == Path("/opt/snap/bin/gpt.vmoptions")
     assert config.snap.user_dir == Path("data/cache/snap-gpt-userdir")
     assert config.snap.default_tile_size_px == 512
     assert config.stamps.range_patches == 2
@@ -42,7 +42,7 @@ def test_load_psi_config_applies_s3_env_overrides(monkeypatch) -> None:
         "https://eodata.dataspace.copernicus.eu, eodata.ams.dataspace.copernicus.eu, eodata.ams.dataspace.copernicus.eu",
     )
 
-    config = load_config(Path("configs/psi_casablanca_slc.yaml"))
+    config = load_config(Path("configs/aoi_psi_slc.yaml"))
 
     assert config.acquisition.s3.endpoint_url == "https://eodata.dataspace.copernicus.eu"
     assert config.acquisition.s3.bucket == "custom-bucket"
@@ -50,7 +50,7 @@ def test_load_psi_config_applies_s3_env_overrides(monkeypatch) -> None:
 
 
 def test_run_context_uses_explicit_run_dir_identity(tmp_path) -> None:
-    config = load_config(Path("configs/psi_casablanca_slc.yaml"))
+    config = load_config(Path("configs/aoi_psi_slc.yaml"))
     project_root = tmp_path
     run_dir = project_root / "runs_psi" / "existing-group" / "attempt-007"
     context = RunContext.create(config, project_root, run_dir=run_dir)
@@ -60,7 +60,7 @@ def test_run_context_uses_explicit_run_dir_identity(tmp_path) -> None:
 
 
 def test_load_minimal_psi_config_uses_single_capped_stack() -> None:
-    config = load_config(Path("configs/psi_casablanca_slc_minimal.yaml"))
+    config = load_config(Path("configs/aoi_psi_slc_minimal.yaml"))
 
     assert len(config.stacks) == 1
     assert config.stacks[0].id == "asc_rel147_vv"
@@ -69,7 +69,7 @@ def test_load_minimal_psi_config_uses_single_capped_stack() -> None:
     assert config.snap.cache_size_mb == 2048
     assert config.snap.java_options == ("-Xms2G", "-Xmx8G")
     assert config.snap.clear_tile_cache_after_row is True
-    assert config.snap.gpt_vmoptions_path == Path("/Applications/esa-snap/bin/gpt.vmoptions")
+    assert config.snap.gpt_vmoptions_path == Path("/opt/snap/bin/gpt.vmoptions")
     assert config.snap.user_dir == Path("data/cache/snap-gpt-userdir")
     assert config.snap.default_tile_size_px == 512
     assert config.snap.workers == 1
@@ -84,9 +84,9 @@ def test_load_minimal_psi_config_uses_single_capped_stack() -> None:
 
 
 def test_load_minimal_cdpsi_six_scene_config_uses_smallest_valid_stack() -> None:
-    config = load_config(Path("configs/psi_casablanca_slc_cdpsi_min6.yaml"))
+    config = load_config(Path("configs/aoi_psi_slc_cdpsi_min6.yaml"))
 
-    assert config.project == "Casablanca PSI CDPSI Minimal 6 Scene"
+    assert config.project == "AOI PSI CDPSI Minimal 6 Scene"
     assert len(config.stacks) == 1
     assert config.stacks[0].id == "asc_rel147_vv"
     assert config.stacks[0].min_scenes == 6

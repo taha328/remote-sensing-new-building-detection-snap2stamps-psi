@@ -1,10 +1,10 @@
 import numpy as np
 import xarray as xr
 
-from casablanca_builtup.config import Sentinel2Config
-from casablanca_builtup.fusion import apply_soft_refinement
-from casablanca_builtup.s1.detection import S1DetectionArtifacts
-from casablanca_builtup.s2.refinement import S2SupportArtifacts, build_s2_support, build_unavailable_s2_support_like
+from aoi_builtup.config import Sentinel2Config
+from aoi_builtup.fusion import apply_soft_refinement
+from aoi_builtup.s1.detection import S1DetectionArtifacts
+from aoi_builtup.s2.refinement import S2SupportArtifacts, build_s2_support, build_unavailable_s2_support_like
 
 
 def _data(values: list[float], name: str) -> xr.DataArray:

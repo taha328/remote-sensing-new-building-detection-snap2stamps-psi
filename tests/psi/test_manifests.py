@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from casablanca_psi.manifests import SlcScene, StackManifest, read_stack_manifest, update_scene_s3_path, write_stack_manifest
+from aoi_psi.manifests import SlcScene, StackManifest, read_stack_manifest, update_scene_s3_path, write_stack_manifest
 
 
 def test_manifest_roundtrip(tmp_path: Path) -> None:

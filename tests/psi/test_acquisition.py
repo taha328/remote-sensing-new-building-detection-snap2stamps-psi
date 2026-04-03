@@ -11,7 +11,7 @@ import logging
 import pytest
 from pystac import Asset, Item
 
-from casablanca_psi.acquisition import (
+from aoi_psi.acquisition import (
     S3ObjectInfo,
     _download_transport_for_scene,
     _item_direction,
@@ -34,9 +34,9 @@ from casablanca_psi.acquisition import (
     download_stack_scenes,
     ensure_download_auth,
 )
-from casablanca_psi.config import OrbitStackConfig, load_config
-from casablanca_psi.manifests import SlcScene, StackManifest, read_stack_manifest, stack_manifest_path, write_stack_manifest
-from casablanca_psi.run_context import RunContext
+from aoi_psi.config import OrbitStackConfig, load_config
+from aoi_psi.manifests import SlcScene, StackManifest, read_stack_manifest, stack_manifest_path, write_stack_manifest
+from aoi_psi.run_context import RunContext
 
 
 def _jwt_with_expiry(seconds_from_now: int) -> str:
@@ -89,7 +89,7 @@ def test_product_uuid_is_parsed_from_odata_href() -> None:
 
 def test_download_auth_is_required(monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc.yaml")
     monkeypatch.delenv(config.acquisition.auth.bearer_token_env, raising=False)
     monkeypatch.delenv("ACCESS_TOKEN", raising=False)
     monkeypatch.delenv(config.acquisition.s3.access_key_env, raising=False)
@@ -100,7 +100,7 @@ def test_download_auth_is_required(monkeypatch) -> None:
 
 def test_download_auth_accepts_s3_credentials(monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc.yaml")
     monkeypatch.delenv(config.acquisition.auth.bearer_token_env, raising=False)
     monkeypatch.delenv("ACCESS_TOKEN", raising=False)
     monkeypatch.setenv(config.acquisition.s3.access_key_env, "access-key")
@@ -110,7 +110,7 @@ def test_download_auth_accepts_s3_credentials(monkeypatch) -> None:
 
 def test_resolve_download_token_falls_back_to_access_token(monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc.yaml")
     monkeypatch.delenv(config.acquisition.auth.bearer_token_env, raising=False)
     monkeypatch.setenv("ACCESS_TOKEN", "token-from-access")
     token, env_name = _resolve_download_token(config)
@@ -124,7 +124,7 @@ def test_normalize_s3_prefix_strips_bucket_prefix() -> None:
 
 def test_scene_s3_path_uses_product_lookup(monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc.yaml")
     scene = SlcScene(
         scene_id="SCENE_5",
         product_name="SCENE_5",
@@ -143,7 +143,7 @@ def test_scene_s3_path_uses_product_lookup(monkeypatch) -> None:
         product_uuid="abc-123",
     )
 
-    import casablanca_psi.acquisition as acquisition_module
+    import aoi_psi.acquisition as acquisition_module
 
     monkeypatch.setattr(acquisition_module, "_stac_scene_s3_paths", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(
@@ -157,7 +157,7 @@ def test_scene_s3_path_uses_product_lookup(monkeypatch) -> None:
 
 def test_scene_s3_path_prefers_stac_asset_lookup(monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc.yaml")
     scene = SlcScene(
         scene_id="SCENE_STAC",
         product_name="SCENE_STAC",
@@ -176,7 +176,7 @@ def test_scene_s3_path_prefers_stac_asset_lookup(monkeypatch) -> None:
         product_uuid="stac-123",
     )
 
-    import casablanca_psi.acquisition as acquisition_module
+    import aoi_psi.acquisition as acquisition_module
 
     monkeypatch.setattr(
         acquisition_module,
@@ -300,7 +300,7 @@ def test_token_seconds_to_expiry_detects_expired_token() -> None:
 
 def test_authorized_session_refreshes_near_expiry_token(monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc.yaml")
     old_token = _jwt_with_expiry(30)
     new_token = _jwt_with_expiry(900)
     monkeypatch.setenv(config.acquisition.auth.bearer_token_env, old_token)
@@ -319,7 +319,7 @@ def test_authorized_session_refreshes_near_expiry_token(monkeypatch) -> None:
         def close(self):
             return None
 
-    import casablanca_psi.acquisition as acquisition_module
+    import aoi_psi.acquisition as acquisition_module
 
     def fake_post(url, data, timeout):
         assert data["grant_type"] == "refresh_token"
@@ -339,7 +339,7 @@ def test_authorized_session_refreshes_near_expiry_token(monkeypatch) -> None:
 
 def test_stream_download_writes_final_file_atomically(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc.yaml")
     monkeypatch.setenv(config.acquisition.auth.bearer_token_env, "token-one")
 
     class Response:
@@ -378,7 +378,7 @@ def test_stream_download_writes_final_file_atomically(tmp_path, monkeypatch) -> 
         def close(self):
             return None
 
-    import casablanca_psi.acquisition as acquisition_module
+    import aoi_psi.acquisition as acquisition_module
 
     monkeypatch.setattr(acquisition_module.requests, "Session", lambda: Session())
     destination = tmp_path / "scene.zip"
@@ -397,7 +397,7 @@ def test_stream_download_writes_final_file_atomically(tmp_path, monkeypatch) -> 
 
 def test_stream_download_retries_on_401_with_refreshed_token(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc.yaml")
     old_token = _jwt_with_expiry(900)
     new_token = _jwt_with_expiry(900)
     monkeypatch.setenv(config.acquisition.auth.bearer_token_env, old_token)
@@ -442,7 +442,7 @@ def test_stream_download_retries_on_401_with_refreshed_token(tmp_path, monkeypat
         def close(self):
             return None
 
-    import casablanca_psi.acquisition as acquisition_module
+    import aoi_psi.acquisition as acquisition_module
 
     class TokenResponse:
         status_code = 200
@@ -475,7 +475,7 @@ def test_stream_download_retries_on_401_with_refreshed_token(tmp_path, monkeypat
 
 def test_stream_download_does_not_log_token_values(tmp_path, monkeypatch, caplog) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc.yaml")
     old_token = "secret-old-token"
     new_token = "secret-new-token"
     monkeypatch.setenv(config.acquisition.auth.bearer_token_env, old_token)
@@ -517,7 +517,7 @@ def test_stream_download_does_not_log_token_values(tmp_path, monkeypatch, caplog
         def json(self):
             return {"access_token": new_token, "refresh_token": "refresh-secret-next"}
 
-    import casablanca_psi.acquisition as acquisition_module
+    import aoi_psi.acquisition as acquisition_module
 
     monkeypatch.setattr(acquisition_module.requests, "Session", lambda: Session())
     monkeypatch.setattr(acquisition_module.requests, "post", lambda url, data, timeout: TokenResponse())
@@ -539,7 +539,7 @@ def test_stream_download_does_not_log_token_values(tmp_path, monkeypatch, caplog
 
 def test_download_scene_via_s3_streams_prefix_into_zip(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc.yaml")
     scene = SlcScene(
         scene_id="SCENE_6",
         product_name="SCENE_6",
@@ -583,7 +583,7 @@ def test_download_scene_via_s3_streams_prefix_into_zip(tmp_path, monkeypatch) ->
             return None
 
     import zipfile
-    import casablanca_psi.acquisition as acquisition_module
+    import aoi_psi.acquisition as acquisition_module
 
     monkeypatch.setattr(
         acquisition_module,
@@ -615,7 +615,7 @@ def test_download_scene_via_s3_streams_prefix_into_zip(tmp_path, monkeypatch) ->
 
 def test_s3_client_uses_explicit_transport_config_without_logging_secret_values(monkeypatch, caplog) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc.yaml")
     monkeypatch.setenv(config.acquisition.s3.access_key_env, "secret-access-value")
     monkeypatch.setenv(config.acquisition.s3.secret_key_env, "secret-secret-value")
     captured: dict[str, object] = {}
@@ -636,7 +636,7 @@ def test_s3_client_uses_explicit_transport_config_without_logging_secret_values(
             def Session():
                 return FakeSession()
 
-    import casablanca_psi.acquisition as acquisition_module
+    import aoi_psi.acquisition as acquisition_module
 
     monkeypatch.setattr(
         acquisition_module,
@@ -677,7 +677,7 @@ def test_s3_client_uses_explicit_transport_config_without_logging_secret_values(
 
 def test_download_scene_via_s3_retries_endpoint_connection_error_on_fallback_endpoint(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc.yaml")
     config.acquisition.s3.download_attempts = 1
     config.acquisition.s3.fallback_endpoint_urls = ("https://eodata.ams.dataspace.copernicus.eu",)
     scene = SlcScene(
@@ -734,7 +734,7 @@ def test_download_scene_via_s3_retries_endpoint_connection_error_on_fallback_end
     endpoint_calls: list[str] = []
 
     import zipfile
-    import casablanca_psi.acquisition as acquisition_module
+    import aoi_psi.acquisition as acquisition_module
 
     monkeypatch.setattr(
         acquisition_module,
@@ -794,7 +794,7 @@ def test_download_scene_via_s3_retries_endpoint_connection_error_on_fallback_end
 
 def test_download_scene_via_s3_retries_transient_read_timeout_with_fresh_client(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc.yaml")
     config.acquisition.s3.download_attempts = 2
     config.acquisition.s3.fallback_endpoint_urls = ()
     scene = SlcScene(
@@ -849,7 +849,7 @@ def test_download_scene_via_s3_retries_transient_read_timeout_with_fresh_client(
             return None
 
     import zipfile
-    import casablanca_psi.acquisition as acquisition_module
+    import aoi_psi.acquisition as acquisition_module
 
     monkeypatch.setattr(
         acquisition_module,
@@ -903,7 +903,7 @@ def test_download_scene_via_s3_retries_transient_read_timeout_with_fresh_client(
 
 def test_download_s3_object_with_resume_recovers_after_midstream_stream_error(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc.yaml")
     config.acquisition.s3.download_attempts = 2
     config.acquisition.s3.fallback_endpoint_urls = ()
     payload = b"manifest-data"
@@ -968,7 +968,7 @@ def test_download_s3_object_with_resume_recovers_after_midstream_stream_error(tm
         def close(self):
             return None
 
-    import casablanca_psi.acquisition as acquisition_module
+    import aoi_psi.acquisition as acquisition_module
 
     monkeypatch.setattr(
         acquisition_module,
@@ -1011,7 +1011,7 @@ def test_download_s3_object_with_resume_recovers_after_midstream_stream_error(tm
 
 def test_download_s3_object_with_resume_survives_many_stream_breaks_before_success(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc.yaml")
     config.acquisition.s3.download_attempts = 1
     config.acquisition.s3.fallback_endpoint_urls = ()
     payload = b"0123456789"
@@ -1069,7 +1069,7 @@ def test_download_s3_object_with_resume_survives_many_stream_breaks_before_succe
         def close(self):
             return None
 
-    import casablanca_psi.acquisition as acquisition_module
+    import aoi_psi.acquisition as acquisition_module
 
     monkeypatch.setattr(
         acquisition_module,
@@ -1123,7 +1123,7 @@ def test_download_s3_object_with_resume_survives_many_stream_breaks_before_succe
 
 def test_download_s3_object_with_resume_uses_existing_partial_file(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc.yaml")
     config.acquisition.s3.download_attempts = 1
     config.acquisition.s3.fallback_endpoint_urls = ()
     payload = b"manifest-data"
@@ -1163,7 +1163,7 @@ def test_download_s3_object_with_resume_uses_existing_partial_file(tmp_path, mon
         def close(self):
             return None
 
-    import casablanca_psi.acquisition as acquisition_module
+    import aoi_psi.acquisition as acquisition_module
 
     monkeypatch.setattr(acquisition_module, "_s3_client", lambda _config, *, endpoint_url=None: Client())
     monkeypatch.setattr(acquisition_module, "_member_endpoint_attempt_budget", lambda *_args, **_kwargs: 1)
@@ -1189,7 +1189,7 @@ def test_download_s3_object_with_resume_uses_existing_partial_file(tmp_path, mon
 
 def test_download_s3_object_with_resume_preserves_partial_when_retries_exhaust(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc.yaml")
     config.acquisition.s3.download_attempts = 2
     config.acquisition.s3.fallback_endpoint_urls = ()
     payload = b"manifest-data"
@@ -1230,7 +1230,7 @@ def test_download_s3_object_with_resume_preserves_partial_when_retries_exhaust(t
         def close(self):
             return None
 
-    import casablanca_psi.acquisition as acquisition_module
+    import aoi_psi.acquisition as acquisition_module
 
     monkeypatch.setattr(
         acquisition_module,
@@ -1274,7 +1274,7 @@ def test_download_s3_object_with_resume_preserves_partial_when_retries_exhaust(t
 
 def test_download_stack_scenes_uses_s3_and_persists_resolved_path(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc.yaml")
     config.acquisition.download_transport = "auto"
     monkeypatch.setenv(config.acquisition.s3.access_key_env, "access-key")
     monkeypatch.setenv(config.acquisition.s3.secret_key_env, "secret-key")
@@ -1309,7 +1309,7 @@ def test_download_stack_scenes_uses_s3_and_persists_resolved_path(tmp_path, monk
     resolved_path = "/eodata/Sentinel-1/SAR/SLC/2024/01/01/SCENE_7.SAFE"
     calls: list[str] = []
 
-    import casablanca_psi.acquisition as acquisition_module
+    import aoi_psi.acquisition as acquisition_module
 
     monkeypatch.setattr(
         acquisition_module,
@@ -1334,7 +1334,7 @@ def test_download_stack_scenes_uses_s3_and_persists_resolved_path(tmp_path, monk
 
 def test_download_stack_scenes_surfaces_s3_errors_in_auto_mode(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc.yaml")
     config.acquisition.download_transport = "auto"
     monkeypatch.setenv(config.acquisition.s3.access_key_env, "access-key")
     monkeypatch.setenv(config.acquisition.s3.secret_key_env, "secret-key")
@@ -1366,7 +1366,7 @@ def test_download_stack_scenes_surfaces_s3_errors_in_auto_mode(tmp_path, monkeyp
         scenes=[scene],
     )
 
-    import casablanca_psi.acquisition as acquisition_module
+    import aoi_psi.acquisition as acquisition_module
 
     monkeypatch.setattr(acquisition_module, "_download_scene_via_s3", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("s3 down")))
 
@@ -1376,7 +1376,7 @@ def test_download_stack_scenes_surfaces_s3_errors_in_auto_mode(tmp_path, monkeyp
 
 def test_download_stack_scenes_reuses_completed_zip(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc.yaml")
     config.cache.reuse_downloads = True
     monkeypatch.setenv(config.acquisition.auth.bearer_token_env, _jwt_with_expiry(900))
     context = RunContext.create(config, tmp_path)
@@ -1409,7 +1409,7 @@ def test_download_stack_scenes_reuses_completed_zip(tmp_path, monkeypatch) -> No
     target.write_bytes(b"completed")
     called = {"count": 0}
 
-    import casablanca_psi.acquisition as acquisition_module
+    import aoi_psi.acquisition as acquisition_module
 
     def fake_stream_download(*args, **kwargs):
         called["count"] += 1
@@ -1425,7 +1425,7 @@ def test_download_stack_scenes_reuses_completed_zip(tmp_path, monkeypatch) -> No
 
 def test_download_stack_scenes_reuses_completed_zip_without_auth_when_nothing_is_pending(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc.yaml")
     config.cache.reuse_downloads = True
     context = RunContext.create(config, tmp_path)
     context.ensure_directories()
@@ -1456,7 +1456,7 @@ def test_download_stack_scenes_reuses_completed_zip_without_auth_when_nothing_is
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(b"completed")
 
-    import casablanca_psi.acquisition as acquisition_module
+    import aoi_psi.acquisition as acquisition_module
 
     def fail_if_called(*args, **kwargs):
         raise AssertionError("ensure_download_auth should not run when every ZIP is already present")
@@ -1472,7 +1472,7 @@ def test_download_stack_scenes_reuses_completed_zip_without_auth_when_nothing_is
 
 def test_download_stack_scenes_reuses_completed_zip_from_prior_attempt_without_auth(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc.yaml")
     config.cache.reuse_downloads = True
 
     source_context = RunContext.create(
@@ -1515,7 +1515,7 @@ def test_download_stack_scenes_reuses_completed_zip_from_prior_attempt_without_a
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_bytes(b"completed-from-prior-attempt")
 
-    import casablanca_psi.acquisition as acquisition_module
+    import aoi_psi.acquisition as acquisition_module
 
     def fail_if_called(*args, **kwargs):
         raise AssertionError("ensure_download_auth should not run when every ZIP is satisfied by cross-attempt reuse")
@@ -1535,7 +1535,7 @@ def test_download_stack_scenes_reuses_completed_zip_from_prior_attempt_without_a
 
 def test_download_stack_scenes_reuses_prior_attempt_zip_and_downloads_only_missing_scene(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc.yaml")
     config.cache.reuse_downloads = True
 
     source_context = RunContext.create(
@@ -1594,7 +1594,7 @@ def test_download_stack_scenes_reuses_prior_attempt_zip_and_downloads_only_missi
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_bytes(b"completed-from-prior-attempt")
 
-    import casablanca_psi.acquisition as acquisition_module
+    import aoi_psi.acquisition as acquisition_module
 
     auth_calls = {"count": 0}
     stream_calls: list[str] = []
@@ -1623,7 +1623,7 @@ def test_download_stack_scenes_reuses_prior_attempt_zip_and_downloads_only_missi
 
 def test_download_stack_scenes_removes_stale_partial_before_s3_retry(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc.yaml")
     config.acquisition.download_transport = "s3"
     monkeypatch.setenv(config.acquisition.s3.access_key_env, "access-key")
     monkeypatch.setenv(config.acquisition.s3.secret_key_env, "secret-key")
@@ -1660,7 +1660,7 @@ def test_download_stack_scenes_removes_stale_partial_before_s3_retry(tmp_path, m
     partial.write_bytes(b"stale")
     calls = {"count": 0}
 
-    import casablanca_psi.acquisition as acquisition_module
+    import aoi_psi.acquisition as acquisition_module
 
     def fake_download_scene_via_s3(_config, _scene, destination, *, stack_id):
         calls["count"] += 1

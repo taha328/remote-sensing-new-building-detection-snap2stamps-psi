@@ -3,8 +3,8 @@ from __future__ import annotations
 import geopandas as gpd
 from shapely.geometry import Point, Polygon
 
-from casablanca_psi.config import FusionConfig
-from casablanca_psi.fusion import fuse_evidence
+from aoi_psi.config import FusionConfig
+from aoi_psi.fusion import fuse_evidence
 
 
 def test_fuse_evidence_scores_and_clusters() -> None:

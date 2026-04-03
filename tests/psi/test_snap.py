@@ -9,12 +9,12 @@ import zipfile
 
 import pytest
 
-from casablanca_psi import acquisition as acquisition_module
-from casablanca_psi.artifact_lifecycle import CleanupWarning
-from casablanca_psi.config import OrbitStackConfig, load_config
-from casablanca_psi.manifests import SlcScene, StackManifest, slc_scene_zip_path
-from casablanca_psi.run_context import RunContext
-from casablanca_psi.snap import (
+from aoi_psi import acquisition as acquisition_module
+from aoi_psi.artifact_lifecycle import CleanupWarning
+from aoi_psi.config import OrbitStackConfig, load_config
+from aoi_psi.manifests import SlcScene, StackManifest, slc_scene_zip_path
+from aoi_psi.run_context import RunContext
+from aoi_psi.snap import (
     SnapEsdNotApplicableError,
     SnapGraphJob,
     SnapGraphRunner,
@@ -254,7 +254,7 @@ def _has_fake_export(output_dir: Path) -> bool:
 
 
 def test_validate_environment_rejects_non_snap_gpt(monkeypatch) -> None:
-    config = load_config(Path("configs/psi_casablanca_slc.yaml"))
+    config = load_config(Path("configs/aoi_psi_slc.yaml"))
     runner = SnapGraphRunner(config)
 
     monkeypatch.setattr("shutil.which", lambda _: "/usr/sbin/gpt")
@@ -270,8 +270,10 @@ def test_validate_environment_rejects_non_snap_gpt(monkeypatch) -> None:
 
 
 def test_validate_environment_requires_dem(monkeypatch, tmp_path) -> None:
-    config = load_config(Path("configs/psi_casablanca_slc.yaml"))
+    config = load_config(Path("configs/aoi_psi_slc.yaml"))
     config.dem.path = tmp_path / "missing_dem.tif"
+    config.snap.gpt_vmoptions_path = tmp_path / "gpt.vmoptions"
+    config.snap.gpt_vmoptions_path.write_text("-Xmx8G\n", encoding="utf-8")
     runner = SnapGraphRunner(config)
 
     monkeypatch.setattr("shutil.which", lambda _: "/Applications/esa-snap/bin/gpt")
@@ -287,7 +289,7 @@ def test_validate_environment_requires_dem(monkeypatch, tmp_path) -> None:
 
 
 def test_graph_path_is_resolved_to_absolute_path() -> None:
-    config = load_config(Path("configs/psi_casablanca_slc.yaml"))
+    config = load_config(Path("configs/aoi_psi_slc.yaml"))
     runner = SnapGraphRunner(config)
 
     graph_path = runner._graph_path("prepare_slc_stack.xml")
@@ -297,7 +299,7 @@ def test_graph_path_is_resolved_to_absolute_path() -> None:
 
 
 def test_coreg_and_export_jobs_use_absolute_dem_path() -> None:
-    config = load_config(Path("configs/psi_casablanca_slc_minimal.yaml"))
+    config = load_config(Path("configs/aoi_psi_slc_minimal.yaml"))
     runner = SnapGraphRunner(config)
     coreg_job = runner._coreg_job(
         master_file=Path("/tmp/master.dim"),
@@ -321,7 +323,7 @@ def test_coreg_and_export_jobs_use_absolute_dem_path() -> None:
 
 
 def test_snap_polarization_normalizes_dual_pol_combination_order() -> None:
-    config = load_config(Path("configs/psi_casablanca_slc.yaml"))
+    config = load_config(Path("configs/aoi_psi_slc.yaml"))
     runner = SnapGraphRunner(config)
 
     class Scene:
@@ -331,7 +333,7 @@ def test_snap_polarization_normalizes_dual_pol_combination_order() -> None:
 
 
 def test_prepare_job_uses_configured_stack_polarization(tmp_path) -> None:
-    config = load_config(Path("configs/psi_casablanca_slc_minimal.yaml"))
+    config = load_config(Path("configs/aoi_psi_slc_minimal.yaml"))
     runner = SnapGraphRunner(config)
     context = RunContext.create(config, tmp_path)
     manifest = _build_manifest()
@@ -351,7 +353,7 @@ def test_prepare_job_uses_configured_stack_polarization(tmp_path) -> None:
 
 
 def test_cleanup_failed_job_outputs_removes_partial_products(tmp_path) -> None:
-    config = load_config(Path("configs/psi_casablanca_slc.yaml"))
+    config = load_config(Path("configs/aoi_psi_slc.yaml"))
     runner = SnapGraphRunner(config)
     output_file = tmp_path / "prepared" / "master.dim"
     data_dir = output_file.with_suffix(".data")
@@ -379,7 +381,7 @@ def test_cleanup_failed_job_outputs_removes_partial_products(tmp_path) -> None:
 
 
 def test_run_graph_passes_configured_parallelism_and_tile_cache_flags(monkeypatch, tmp_path) -> None:
-    config = load_config(Path("configs/psi_casablanca_slc_minimal.yaml"))
+    config = load_config(Path("configs/aoi_psi_slc_minimal.yaml"))
     runner = SnapGraphRunner(config)
     job = SnapGraphJob(
         name="test-job",
@@ -420,14 +422,16 @@ def test_run_graph_passes_configured_parallelism_and_tile_cache_flags(monkeypatc
     assert "-x" in command
 
 
-def test_describe_runtime_policy_audits_installed_vmoptions() -> None:
-    config = load_config(Path("configs/psi_casablanca_slc_minimal.yaml"))
+def test_describe_runtime_policy_audits_installed_vmoptions(tmp_path) -> None:
+    config = load_config(Path("configs/aoi_psi_slc_minimal.yaml"))
+    config.snap.gpt_vmoptions_path = tmp_path / "gpt.vmoptions"
+    config.snap.gpt_vmoptions_path.write_text("-Xms2G\n-Xmx11G\n", encoding="utf-8")
     runner = SnapGraphRunner(config)
 
     policy = runner.describe_runtime_policy()
 
-    assert policy["gpt_path"] == "/Applications/esa-snap/bin/gpt"
-    assert policy["gpt_vmoptions_path"] == "/Applications/esa-snap/bin/gpt.vmoptions"
+    assert policy["gpt_path"] == "/opt/snap/bin/gpt"
+    assert policy["gpt_vmoptions_path"] == str(config.snap.gpt_vmoptions_path.resolve())
     assert policy["gpt_vmoptions_exists"] is True
     assert "-Xmx11G" in policy["installed_vmoptions"]
     assert "-Xmx8G" in policy["effective_java_options"]
@@ -444,8 +448,10 @@ def test_describe_runtime_policy_audits_installed_vmoptions() -> None:
 
 
 def test_validate_environment_seeds_egm96_into_snap_userdir(tmp_path, monkeypatch) -> None:
-    config = load_config(Path("configs/psi_casablanca_slc_minimal.yaml"))
+    config = load_config(Path("configs/aoi_psi_slc_minimal.yaml"))
     config.snap.user_dir = tmp_path / "snap-userdir"
+    config.snap.gpt_vmoptions_path = tmp_path / "gpt.vmoptions"
+    config.snap.gpt_vmoptions_path.write_text("-Xmx8G\n", encoding="utf-8")
     config.dem.path = tmp_path / "dem.tif"
     config.dem.path.write_text("dem", encoding="utf-8")
     runner = SnapGraphRunner(config)
@@ -478,7 +484,7 @@ def test_validate_environment_seeds_egm96_into_snap_userdir(tmp_path, monkeypatc
 
 
 def test_ensure_orbit_auxdata_for_scene_seeds_precise_orbit_into_snap_userdir(tmp_path, monkeypatch) -> None:
-    config = load_config(Path("configs/psi_casablanca_slc_minimal.yaml"))
+    config = load_config(Path("configs/aoi_psi_slc_minimal.yaml"))
     config.snap.user_dir = tmp_path / "snap-userdir"
     runner = SnapGraphRunner(config)
     scene = _build_manifest().scenes[1]
@@ -515,7 +521,7 @@ def test_ensure_orbit_auxdata_for_scene_seeds_precise_orbit_into_snap_userdir(tm
 def test_ensure_orbit_auxdata_for_scene_downloads_precise_orbit_from_official_s3_when_local_cache_missing(
     tmp_path, monkeypatch
 ) -> None:
-    config = load_config(Path("configs/psi_casablanca_slc_minimal.yaml"))
+    config = load_config(Path("configs/aoi_psi_slc_minimal.yaml"))
     config.snap.user_dir = tmp_path / "snap-userdir"
     runner = SnapGraphRunner(config)
     scene = SlcScene(
@@ -584,7 +590,7 @@ def test_ensure_orbit_auxdata_for_scene_downloads_precise_orbit_from_official_s3
 
 
 def test_is_no_intersection_output_matches_snap_messages() -> None:
-    config = load_config(Path("configs/psi_casablanca_slc.yaml"))
+    config = load_config(Path("configs/aoi_psi_slc.yaml"))
     runner = SnapGraphRunner(config)
 
     assert runner._is_no_intersection_output("WARNING: No intersection with source product boundary")
@@ -593,7 +599,7 @@ def test_is_no_intersection_output_matches_snap_messages() -> None:
 
 
 def test_is_esd_not_applicable_output_matches_snap_message() -> None:
-    config = load_config(Path("configs/psi_casablanca_slc.yaml"))
+    config = load_config(Path("configs/aoi_psi_slc.yaml"))
     runner = SnapGraphRunner(config)
 
     assert runner._is_esd_not_applicable_output("Registration window width should not be grater than burst width 0")
@@ -601,7 +607,7 @@ def test_is_esd_not_applicable_output_matches_snap_message() -> None:
 
 def test_run_stack_skips_non_intersecting_swath_and_continues(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     runner = SnapGraphRunner(config)
     monkeypatch.setattr(runner, "validate_environment", lambda: None)
     monkeypatch.setattr(runner, "_has_reusable_export", _has_fake_export)
@@ -639,7 +645,7 @@ def test_run_stack_skips_non_intersecting_swath_and_continues(tmp_path, monkeypa
 
 def test_run_stack_retries_coreg_without_esd_on_esd_error(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     runner = SnapGraphRunner(config)
     monkeypatch.setattr(runner, "validate_environment", lambda: None)
     monkeypatch.setattr(runner, "_has_reusable_export", _has_fake_export)
@@ -682,7 +688,7 @@ def test_run_stack_retries_coreg_without_esd_on_esd_error(tmp_path, monkeypatch)
 
 def test_run_stack_purges_prepared_products_after_validated_swath_coreg(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     config.artifact_lifecycle.purge_pair_products_after_merged_coreg = False
     config.artifact_lifecycle.purge_prepared_after_coreg = True
     config.artifact_lifecycle.purge_snap_intermediates_after_export = False
@@ -723,7 +729,7 @@ def test_run_stack_purges_prepared_products_after_validated_swath_coreg(tmp_path
 
 def test_run_stack_prepares_secondaries_just_in_time_per_pair(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     config.artifact_lifecycle.purge_master_prepared_after_pair = False
     config.artifact_lifecycle.purge_secondary_prepared_after_pair = False
     config.artifact_lifecycle.purge_prepared_after_coreg = False
@@ -769,7 +775,7 @@ def test_run_stack_prepares_secondaries_just_in_time_per_pair(tmp_path, monkeypa
 
 def test_run_stack_purges_secondary_prepared_products_after_each_valid_pair(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     config.artifact_lifecycle.purge_master_prepared_after_pair = False
     config.artifact_lifecycle.purge_secondary_prepared_after_pair = True
     config.artifact_lifecycle.purge_prepared_after_coreg = False
@@ -809,7 +815,7 @@ def test_run_stack_purges_secondary_prepared_products_after_each_valid_pair(tmp_
 
 def test_run_stack_purges_master_prepared_products_after_each_valid_pair(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     config.artifact_lifecycle.purge_master_prepared_after_pair = True
     config.artifact_lifecycle.purge_secondary_prepared_after_pair = True
     config.artifact_lifecycle.purge_prepared_after_coreg = False
@@ -852,7 +858,7 @@ def test_run_stack_purges_master_prepared_products_after_each_valid_pair(tmp_pat
 
 def test_run_stack_purges_stale_secondary_prepared_products_before_on_demand_regeneration(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     config.artifact_lifecycle.purge_master_prepared_after_pair = False
     config.artifact_lifecycle.purge_secondary_prepared_after_pair = True
     config.artifact_lifecycle.purge_prepared_after_coreg = False
@@ -898,7 +904,7 @@ def test_run_stack_purges_stale_secondary_prepared_products_before_on_demand_reg
 
 def test_run_stack_recreates_master_prepared_on_demand_between_pairs(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     config.artifact_lifecycle.purge_master_prepared_after_pair = True
     config.artifact_lifecycle.purge_secondary_prepared_after_pair = True
     config.artifact_lifecycle.purge_prepared_after_coreg = False
@@ -942,7 +948,7 @@ def test_run_stack_recreates_master_prepared_on_demand_between_pairs(tmp_path, m
 
 def test_run_stack_removes_obsolete_pair_quarantine_after_active_pair_is_valid(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     config.artifact_lifecycle.purge_master_prepared_after_pair = False
     config.artifact_lifecycle.purge_secondary_prepared_after_pair = True
     config.artifact_lifecycle.purge_prepared_after_coreg = False
@@ -991,7 +997,7 @@ def test_run_stack_removes_obsolete_pair_quarantine_after_active_pair_is_valid(t
 
 def test_run_stack_emits_cleanup_records_to_observer(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     config.artifact_lifecycle.purge_master_prepared_after_pair = True
     config.artifact_lifecycle.purge_secondary_prepared_after_pair = True
     config.artifact_lifecycle.purge_prepared_after_coreg = False
@@ -1033,7 +1039,7 @@ def test_run_stack_emits_cleanup_records_to_observer(tmp_path, monkeypatch) -> N
 
 def test_run_stack_purges_snap_intermediates_after_validated_export(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     config.artifact_lifecycle.purge_prepared_after_coreg = False
     config.artifact_lifecycle.purge_snap_intermediates_after_export = True
     runner = SnapGraphRunner(config)
@@ -1070,7 +1076,7 @@ def test_run_stack_purges_snap_intermediates_after_validated_export(tmp_path, mo
 
 def test_run_stack_reuses_valid_export_and_downgrades_cleanup_warning(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     config.artifact_lifecycle.purge_prepared_after_coreg = False
     config.artifact_lifecycle.purge_snap_intermediates_after_export = True
     runner = SnapGraphRunner(config)
@@ -1109,7 +1115,7 @@ def test_run_stack_reuses_valid_export_and_downgrades_cleanup_warning(tmp_path, 
         )
         return []
 
-    monkeypatch.setattr("casablanca_psi.snap.delete_paths", fake_delete_paths)
+    monkeypatch.setattr("aoi_psi.snap.delete_paths", fake_delete_paths)
 
     outputs = runner.run_stack(context, manifest, stack, "POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))")
 
@@ -1121,7 +1127,7 @@ def test_run_stack_reuses_valid_export_and_downgrades_cleanup_warning(tmp_path, 
 
 def test_run_stack_skips_prepare_when_pair_products_already_cover_swath(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     config.artifact_lifecycle.purge_prepared_after_coreg = True
     config.artifact_lifecycle.purge_snap_intermediates_after_export = False
     runner = SnapGraphRunner(config)
@@ -1165,7 +1171,7 @@ def test_run_stack_skips_prepare_when_pair_products_already_cover_swath(tmp_path
 
 def test_run_stack_builds_two_product_stamps_export_inputs(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     config.artifact_lifecycle.purge_prepared_after_coreg = False
     config.artifact_lifecycle.purge_snap_intermediates_after_export = False
     runner = SnapGraphRunner(config)
@@ -1284,7 +1290,7 @@ def test_run_stack_builds_two_product_stamps_export_inputs(tmp_path, monkeypatch
 
 def test_run_stack_supports_three_scene_cdpsi_subset(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_cdpsi_min6.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_cdpsi_min6.yaml")
     config.artifact_lifecycle.purge_prepared_after_coreg = False
     config.artifact_lifecycle.purge_snap_intermediates_after_export = False
     runner = SnapGraphRunner(config)
@@ -1466,7 +1472,7 @@ def test_run_stack_supports_three_scene_cdpsi_subset(tmp_path, monkeypatch) -> N
 
 def test_run_stack_purges_superseded_export_checkpoints_before_final_ifg_merge(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     config.artifact_lifecycle.purge_prepared_after_coreg = False
     config.artifact_lifecycle.purge_snap_intermediates_after_export = False
     runner = SnapGraphRunner(config)
@@ -1561,7 +1567,7 @@ def test_run_stack_purges_superseded_export_checkpoints_before_final_ifg_merge(t
 
 def test_run_stack_reuse_final_coreg_purges_coreg_exports_before_final_ifg_merge(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     config.artifact_lifecycle.purge_prepared_after_coreg = False
     config.artifact_lifecycle.purge_snap_intermediates_after_export = False
     runner = SnapGraphRunner(config)
@@ -1665,7 +1671,7 @@ def test_run_stack_reuse_final_coreg_purges_coreg_exports_before_final_ifg_merge
 
 def test_final_coreg_contract_validation_rejects_repeated_master_aliases(tmp_path) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     runner = SnapGraphRunner(config)
     manifest = _build_manifest()
     master = manifest.scenes[2]
@@ -1704,7 +1710,7 @@ def test_final_coreg_contract_validation_rejects_repeated_master_aliases(tmp_pat
 
 def test_selected_final_coreg_stack_band_names_prune_and_normalize_to_one_master_and_one_slave_per_date(tmp_path) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     runner = SnapGraphRunner(config)
     manifest = _build_manifest()
     master = manifest.scenes[2]
@@ -1765,7 +1771,7 @@ def test_selected_final_coreg_stack_band_names_prune_and_normalize_to_one_master
 
 def test_final_coreg_contract_validation_rejects_missing_slave_metadata(tmp_path) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     runner = SnapGraphRunner(config)
     manifest = _build_manifest()
     master = manifest.scenes[2]
@@ -1788,7 +1794,7 @@ def test_final_coreg_contract_validation_rejects_missing_slave_metadata(tmp_path
 
 def test_final_coreg_contract_validation_rejects_slave_metadata_date_mismatch(tmp_path) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     runner = SnapGraphRunner(config)
     manifest = _build_manifest()
     master = manifest.scenes[2]
@@ -1813,7 +1819,7 @@ def test_final_coreg_contract_validation_rejects_slave_metadata_date_mismatch(tm
 
 def test_repair_final_coreg_baseline_metadata_merges_top_level_baselines(tmp_path) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     runner = SnapGraphRunner(config)
     manifest = _build_manifest()
     master = manifest.scenes[2]
@@ -1877,7 +1883,7 @@ def test_repair_final_coreg_baseline_metadata_merges_top_level_baselines(tmp_pat
 
 def test_repair_final_coreg_slave_metadata_replaces_master_date_children(tmp_path) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     runner = SnapGraphRunner(config)
     manifest = _build_manifest()
     master = manifest.scenes[2]
@@ -1979,7 +1985,7 @@ def test_stamps_export_graph_reads_final_assembled_products() -> None:
 
 def test_run_stack_purges_pair_products_after_merged_coreg_checkpoint(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     config.artifact_lifecycle.purge_pair_products_after_merged_coreg = True
     config.artifact_lifecycle.purge_prepared_after_coreg = False
     config.artifact_lifecycle.purge_snap_intermediates_after_export = False
@@ -2042,7 +2048,7 @@ def test_run_stack_purges_pair_products_after_merged_coreg_checkpoint(tmp_path, 
 
 def test_run_stack_reuses_export_checkpoint_without_rebuilding_pair_products(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     config.artifact_lifecycle.purge_pair_products_after_merged_coreg = True
     config.artifact_lifecycle.purge_prepared_after_coreg = False
     config.artifact_lifecycle.purge_snap_intermediates_after_export = False
@@ -2117,7 +2123,7 @@ def test_run_stack_reuses_export_checkpoint_without_rebuilding_pair_products(tmp
 
 def test_cleanup_invalid_export_checkpoint_state_removes_bad_export_only(tmp_path) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     runner = SnapGraphRunner(config)
     export_dir = tmp_path / "snap" / "asc_rel147_vv" / "stamps_export"
     for name in ("rslc", "diff0", "geo"):

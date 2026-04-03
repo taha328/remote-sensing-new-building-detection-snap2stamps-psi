@@ -5,11 +5,11 @@ import subprocess
 
 import pytest
 
-from casablanca_psi.artifact_lifecycle import CleanupWarning
-from casablanca_psi.config import load_config
-from casablanca_psi.manifests import SlcScene, StackManifest
-from casablanca_psi.run_context import RunContext
-from casablanca_psi.stamps import StaMPSRunner, _PatchWorkerProcess
+from aoi_psi.artifact_lifecycle import CleanupWarning
+from aoi_psi.config import load_config
+from aoi_psi.manifests import SlcScene, StackManifest
+from aoi_psi.run_context import RunContext
+from aoi_psi.stamps import StaMPSRunner, _PatchWorkerProcess
 
 
 def _build_manifest() -> StackManifest:
@@ -71,7 +71,7 @@ def _write_emergence_ready_stamps_outputs(export_dir: Path) -> None:
 
 def test_run_stack_reuses_existing_stamps_outputs_and_preserves_snap_export_for_cdpsi(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     runner = StaMPSRunner(config)
     monkeypatch.setattr(runner, "validate_environment", lambda: None)
     monkeypatch.setattr(runner, "_run_mt_prep_snap", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("mt_prep_snap should not run")))
@@ -98,7 +98,7 @@ def test_run_stack_reuses_existing_stamps_outputs_and_preserves_snap_export_for_
 
 def test_run_stack_reuses_existing_outputs_without_snap_export_cleanup_warning_in_cdpsi_mode(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     runner = StaMPSRunner(config)
     monkeypatch.setattr(runner, "validate_environment", lambda: None)
     monkeypatch.setattr(runner, "_run_mt_prep_snap", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("mt_prep_snap should not run")))
@@ -111,7 +111,7 @@ def test_run_stack_reuses_existing_outputs_without_snap_export_cleanup_warning_i
         delete_called = True
         return []
 
-    monkeypatch.setattr("casablanca_psi.stamps.delete_paths", fake_delete_paths)
+    monkeypatch.setattr("aoi_psi.stamps.delete_paths", fake_delete_paths)
 
     context = RunContext.create(config, tmp_path)
     context.ensure_directories()
@@ -134,7 +134,7 @@ def test_run_stack_reuses_existing_outputs_without_snap_export_cleanup_warning_i
 
 def test_run_stack_preserves_snap_export_after_valid_stamps_outputs_in_cdpsi_mode(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     runner = StaMPSRunner(config)
     monkeypatch.setattr(runner, "validate_environment", lambda: None)
 
@@ -166,7 +166,7 @@ def test_run_stack_preserves_snap_export_after_valid_stamps_outputs_in_cdpsi_mod
 
 def test_run_stack_preserves_snap_export_when_only_raw_psi_outputs_exist(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     runner = StaMPSRunner(config)
     monkeypatch.setattr(runner, "validate_environment", lambda: None)
 
@@ -197,7 +197,7 @@ def test_run_stack_preserves_snap_export_when_only_raw_psi_outputs_exist(tmp_pat
 
 def test_run_stack_emits_cleanup_records_to_observer(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     runner = StaMPSRunner(config)
     monkeypatch.setattr(runner, "validate_environment", lambda: None)
 
@@ -234,7 +234,7 @@ def test_run_stack_emits_cleanup_records_to_observer(tmp_path, monkeypatch) -> N
 
 def test_environment_includes_stamps_bin_dependency_bins_and_interpreter_dir(monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     runner = StaMPSRunner(config)
 
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
@@ -254,9 +254,13 @@ def test_environment_includes_stamps_bin_dependency_bins_and_interpreter_dir(mon
     assert env["TRIANGLE_BIN"] == "/tmp/tools/triangle/bin/triangle"
 
 
-def test_validate_environment_requires_snaphu(monkeypatch) -> None:
+def test_validate_environment_requires_snaphu(monkeypatch, tmp_path) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
+    config.stamps.install_root = tmp_path / "StaMPS"
+    (config.stamps.install_root / "bin").mkdir(parents=True)
+    (config.stamps.install_root / "matlab").mkdir()
+    (config.stamps.install_root / "bin" / "mt_prep_snap").write_text("ok", encoding="utf-8")
     runner = StaMPSRunner(config)
 
     monkeypatch.setattr("shutil.which", lambda command: str(Path("/Applications/MATLAB_R2025b.app/bin/matlab")))
@@ -267,9 +271,13 @@ def test_validate_environment_requires_snaphu(monkeypatch) -> None:
         runner.validate_environment()
 
 
-def test_validate_environment_requires_triangle(monkeypatch) -> None:
+def test_validate_environment_requires_triangle(monkeypatch, tmp_path) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
+    config.stamps.install_root = tmp_path / "StaMPS"
+    (config.stamps.install_root / "bin").mkdir(parents=True)
+    (config.stamps.install_root / "matlab").mkdir()
+    (config.stamps.install_root / "bin" / "mt_prep_snap").write_text("ok", encoding="utf-8")
     runner = StaMPSRunner(config)
 
     monkeypatch.setattr("shutil.which", lambda command: str(Path("/Applications/MATLAB_R2025b.app/bin/matlab")))
@@ -282,7 +290,7 @@ def test_validate_environment_requires_triangle(monkeypatch) -> None:
 
 def test_run_mt_prep_snap_requires_candidate_files(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     runner = StaMPSRunner(config)
 
     monkeypatch.setattr(runner, "_environment", lambda: {})
@@ -307,7 +315,7 @@ def test_run_mt_prep_snap_requires_candidate_files(tmp_path, monkeypatch) -> Non
 
 def test_validate_mt_prep_outputs_accepts_complete_patch(tmp_path) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     runner = StaMPSRunner(config)
 
     (tmp_path / "patch.list").write_text("PATCH_1\n", encoding="utf-8")
@@ -321,7 +329,7 @@ def test_validate_mt_prep_outputs_accepts_complete_patch(tmp_path) -> None:
 
 def test_run_stack_cleans_partial_workspace_before_rerun(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     runner = StaMPSRunner(config)
     monkeypatch.setattr(runner, "validate_environment", lambda: None)
 
@@ -364,7 +372,7 @@ def test_run_stack_cleans_partial_workspace_before_rerun(tmp_path, monkeypatch) 
 
 def test_run_matlab_batch_uses_logfile(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     runner = StaMPSRunner(config)
 
     commands: list[list[str]] = []
@@ -384,7 +392,7 @@ def test_run_matlab_batch_uses_logfile(tmp_path, monkeypatch) -> None:
 
 def test_matlab_startup_script_injects_project_helper_dir() -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     runner = StaMPSRunner(config)
 
     startup = runner._matlab_startup_script()
@@ -398,7 +406,7 @@ def test_matlab_startup_script_injects_project_helper_dir() -> None:
 
 def test_describe_execution_plan_is_patch_aware(monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     runner = StaMPSRunner(config)
     monkeypatch.setattr(runner, "_resolve_snaphu_binary", lambda: Path("/tmp/tools/snaphu/bin/snaphu"))
     monkeypatch.setattr(runner, "_resolve_triangle_binary", lambda: Path("/tmp/tools/triangle/bin/triangle"))
@@ -421,7 +429,7 @@ def test_describe_execution_plan_is_patch_aware(monkeypatch) -> None:
 
 def test_run_stack_uses_parallel_patch_phase_then_serial_merge(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     config.stamps.max_parallel_patch_workers = 2
     runner = StaMPSRunner(config)
     monkeypatch.setattr(runner, "validate_environment", lambda: None)
@@ -475,7 +483,7 @@ def test_run_stack_uses_parallel_patch_phase_then_serial_merge(tmp_path, monkeyp
 
 def test_run_stack_executes_patch_batches_serially_when_parallel_limit_is_one(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     runner = StaMPSRunner(config)
     monkeypatch.setattr(runner, "validate_environment", lambda: None)
 
@@ -529,7 +537,7 @@ def test_run_stack_executes_patch_batches_serially_when_parallel_limit_is_one(tm
 
 def test_parallel_patch_failure_terminates_siblings(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     config.stamps.max_parallel_patch_workers = 2
     runner = StaMPSRunner(config)
     monkeypatch.setattr(runner, "_environment", lambda: {})
@@ -586,7 +594,7 @@ def test_parallel_patch_failure_terminates_siblings(tmp_path, monkeypatch) -> No
 
 def test_run_stack_reuses_completed_patch_workspace_for_merge_rerun(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     runner = StaMPSRunner(config)
     monkeypatch.setattr(runner, "validate_environment", lambda: None)
     monkeypatch.setattr(runner, "_run_mt_prep_snap", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("mt_prep_snap should not rerun")))
@@ -651,7 +659,7 @@ def test_run_stack_reuses_completed_patch_workspace_for_merge_rerun(tmp_path, mo
 
 def test_run_stack_reuses_step6_workspace_for_late_stage_rerun(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     runner = StaMPSRunner(config)
     monkeypatch.setattr(runner, "validate_environment", lambda: None)
     monkeypatch.setattr(runner, "_run_mt_prep_snap", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("mt_prep_snap should not rerun")))
@@ -706,7 +714,7 @@ def test_run_stack_reuses_step6_workspace_for_late_stage_rerun(tmp_path, monkeyp
 
 def test_run_stack_reuses_step7_workspace_for_step8_rerun(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     runner = StaMPSRunner(config)
     monkeypatch.setattr(runner, "validate_environment", lambda: None)
     monkeypatch.setattr(runner, "_run_mt_prep_snap", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("mt_prep_snap should not rerun")))
@@ -779,7 +787,7 @@ def test_run_stack_reuses_step7_workspace_for_step8_rerun(tmp_path, monkeypatch)
 
 def test_run_stack_reuses_step8_workspace_for_export_only_rerun(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
-    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config = load_config(root / "configs" / "aoi_psi_slc_minimal.yaml")
     runner = StaMPSRunner(config)
     monkeypatch.setattr(runner, "validate_environment", lambda: None)
     monkeypatch.setattr(runner, "_run_mt_prep_snap", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("mt_prep_snap should not rerun")))

@@ -1,6 +1,6 @@
 import xarray as xr
 
-from casablanca_builtup.qa import binary_area_ha, decision_histogram
+from aoi_builtup.qa import binary_area_ha, decision_histogram
 
 
 def test_binary_area_ha_uses_resolution() -> None:

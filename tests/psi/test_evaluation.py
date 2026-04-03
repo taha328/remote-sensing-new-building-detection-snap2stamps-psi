@@ -3,7 +3,7 @@ from __future__ import annotations
 import geopandas as gpd
 from shapely.geometry import Point, Polygon
 
-from casablanca_psi.evaluation import evaluate_points_against_reference, evaluate_polygons_against_reference
+from aoi_psi.evaluation import evaluate_points_against_reference, evaluate_polygons_against_reference
 
 
 def test_evaluation_metrics() -> None:

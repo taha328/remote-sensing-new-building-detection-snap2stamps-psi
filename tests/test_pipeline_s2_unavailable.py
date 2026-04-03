@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from casablanca_builtup.io import read_json
-from casablanca_builtup.pipeline import run_pipeline
-import casablanca_builtup.pipeline as pipeline_module
+from aoi_builtup.io import read_json
+from aoi_builtup.pipeline import run_pipeline
+import aoi_builtup.pipeline as pipeline_module
 
 from tests.helpers import install_fake_pipeline, write_test_config
 

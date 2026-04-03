@@ -3,9 +3,9 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "casablanca-builtup-pipeline"
+name = "remote-sensing-new-building-detection-pipeline"
 version = "0.1.0"
-description = "Local production-grade Sentinel-1/Sentinel-2 built-up change detection pipeline for Casablanca."
+description = "AOI-agnostic remote-sensing new-building detection pipeline with Sentinel-1/Sentinel-2 built-up change detection and SNAP-to-StaMPS PSI/CDPSI workflows."
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
@@ -40,8 +40,8 @@ dev = [
 ]
 
 [project.scripts]
-casablanca-builtup = "casablanca_builtup.cli:app"
-casablanca-psi = "casablanca_psi.cli:app"
+aoi-builtup = "aoi_builtup.cli:app"
+aoi-psi = "aoi_psi.cli:app"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

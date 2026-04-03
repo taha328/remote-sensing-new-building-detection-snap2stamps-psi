@@ -8,10 +8,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from casablanca_psi.cdpsi import build_cdpsi_artifacts, plan_cdpsi_stack
-from casablanca_psi.config import OrbitStackConfig, PsiDetectionConfig
-from casablanca_psi.manifests import SlcScene, StackManifest
-from casablanca_psi.psi_results import load_ps_points
+from aoi_psi.cdpsi import build_cdpsi_artifacts, plan_cdpsi_stack
+from aoi_psi.config import OrbitStackConfig, PsiDetectionConfig
+from aoi_psi.manifests import SlcScene, StackManifest
+from aoi_psi.psi_results import load_ps_points
 
 
 def _scene(acquisition_date: str, index: int) -> SlcScene:
@@ -74,8 +74,11 @@ def test_load_ps_points_preserves_cdpsi_pixel_keys(tmp_path: Path) -> None:
     )
 
     points = load_ps_points(csv_path)
+    projected_points = load_ps_points(csv_path, target_crs="EPSG:32629")
 
     assert len(points) == 1
+    assert points.crs is not None and points.crs.to_string() == "EPSG:4326"
+    assert projected_points.crs is not None and projected_points.crs.to_string() == "EPSG:32629"
     assert int(points.iloc[0]["azimuth_index"]) == 101
     assert int(points.iloc[0]["range_index"]) == 202
 

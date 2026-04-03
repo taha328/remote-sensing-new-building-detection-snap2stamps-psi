@@ -1,48 +1,47 @@
-# Migration Plan
+# AOI Onboarding Checklist
 
-## Phase 1: Freeze the notebook baseline
+## 1. Duplicate The Example Config You Need
 
-- Export notebook period-level outputs:
-  - S1 VV ratio
-  - S1 VH ratio
-  - S1 p-value
-  - raw S1 candidate mask
-  - refined S1+S2 mask
-  - cumulative raster
-  - final zone vectors
-- Record the exact AOI, date windows, and thresholds from the notebook.
-- Treat those outputs as non-regression references, not as ground truth.
+- built-up workflow: start from `configs/aoi_builtup.yaml`
+- full PSI workflow: start from `configs/aoi_psi_slc.yaml`
+- minimal PSI smoke test: start from `configs/aoi_psi_slc_minimal.yaml`
 
-## Phase 2: Reproduce S1 locally
+## 2. Replace The AOI Definition
 
-- Replace GEE acquisition with `sentinel-1-rtc` from Planetary Computer.
-- Match the notebook:
-  - summer windows
-  - Sentinel-1A pinning
-  - VV/VH bands
-  - LRT `alpha=0.01`
-  - `VV ratio > 1.5`
-  - `VH ratio > 1.05`
-- Validate local S1 rasters against notebook patterns and total candidate area.
+- set `aoi.name` to a stable slug for the target AOI
+- replace the example `bbox` with your own bbox, or switch to `aoi.path`
+- keep `aoi.crs` aligned with the AOI source data
 
-## Phase 3: Add S2 soft refinement
+## 3. Verify The Grid Strategy
 
-- Replace notebook S2 logic with local `sentinel-2-l2a` loading.
-- Use SCL-based masking plus clear-observation counts.
-- Keep S1 where S2 is unavailable.
-- Require moderate S2 support only where S2 is reliable.
-- Add strong-S1 override to preserve recall.
+- keep `grid.crs: auto` unless you have a specific projected CRS requirement
+- keep `resolution_m` aligned with the analysis you want to perform
 
-## Phase 4: Add cumulative zoning and vector outputs
+## 4. Replace Example Time Windows
 
-- Build cumulative first-change raster.
-- Compute local density and morphology locally.
-- Polygonize with rasterio, then compute vector metrics with GeoPandas/Shapely.
-- Export GeoParquet and GeoPackage instead of depending on fragile GeoJSON-only flows.
+- set built-up before/after windows for your seasonal comparison
+- set PSI acquisition windows for the stack length you need
+- verify scene density before running expensive preprocessing
 
-## Phase 5: Production hardening
+## 5. Prepare Reference Inputs
 
-- Add CLI stage commands.
-- Persist manifests and run reports.
-- Add unit tests and synthetic raster regression tests.
-- Add optional reference-label evaluation if labelled polygons become available.
+- update DEM paths under `dem.path`
+- update evaluation references if you plan to run evaluation commands
+- review optional context layers for PSI fusion
+
+## 6. Validate External Tooling
+
+- confirm SNAP `gpt_path` and `gpt_vmoptions_path`
+- confirm StaMPS `install_root`
+- confirm MATLAB or Octave configuration
+- confirm Copernicus credentials
+
+## 7. Smoke Test First
+
+- run `aoi-builtup acquire-data` before full built-up processing
+- run `aoi-psi validate-provider`
+- run `aoi-psi run-pipeline --config configs/aoi_psi_slc_minimal.yaml` before the full PSI stack
+
+## 8. Freeze The Working Configuration
+
+- once the configuration works, keep the resolved config, manifests, and run report from the first successful attempt as your reproducibility baseline
