@@ -13,6 +13,10 @@ __pycache__/
 *.pyc
 *.egg-info/
 
+# local exploratory assets
+/notebooks/
+/scripts/
+
 # downloaded data and runtime outputs
 data/
 runs/

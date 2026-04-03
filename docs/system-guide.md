@@ -35,7 +35,6 @@ The PSI workflow produces:
 - `configs/`: example configuration files.
 - `docs/`: architecture, operations, onboarding, and this guide.
 - `resources/`: SNAP graph templates, StaMPS export script, and MATLAB helpers.
-- `scripts/`: helper scripts for auxiliary notebook generation and visualization work.
 - `src/aoi_builtup/`: built-up workflow package.
 - `src/aoi_psi/`: PSI and CDPSI workflow package.
 - `tests/`: unit and integration tests.
