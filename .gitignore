@@ -18,6 +18,7 @@ runs/
 runs_psi/
 target.dim
 target.data/
+.tools/
 
 # local presentation artifact
 *.pptx
