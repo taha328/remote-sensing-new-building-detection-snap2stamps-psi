@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 import logging
 
@@ -11,12 +12,13 @@ from casablanca_builtup.io import write_json, write_vector, write_yaml
 from casablanca_builtup.qa import base_run_report, finalize_run_report, mark_running_stages, mark_stage
 from casablanca_builtup.runtime import PipelineInterruptedError, interruption_guard
 from casablanca_psi.acquisition import build_manifests, download_stack_scenes, load_aoi_geometry
-from casablanca_psi.artifact_lifecycle import CleanupRecord, CleanupWarning, cleanup_stamps_workspace
+from casablanca_psi.artifact_lifecycle import CleanupRecord, CleanupWarning, cleanup_stamps_workspace, is_valid_snap_export_dir
+from casablanca_psi.cdpsi import build_cdpsi_artifacts, plan_cdpsi_stack
 from casablanca_psi.config import PipelineConfig, load_config
 from casablanca_psi.export import export_fusion_outputs, write_run_summary
 from casablanca_psi.fusion import FusionOutputs, fuse_evidence
 from casablanca_psi.logging_utils import configure_logging
-from casablanca_psi.psi_results import detect_emergent_ps, load_ps_points
+from casablanca_psi.psi_results import load_ps_points
 from casablanca_psi.run_context import RunContext
 from casablanca_psi.snap import SnapGraphRunner
 from casablanca_psi.stamps import StaMPSRunner
@@ -127,27 +129,68 @@ def run_pipeline(
             snap_runner = SnapGraphRunner(config)
             stamps_runner = StaMPSRunner(config)
             stack_points = []
+            cdpsi_plans = {stack.id: plan_cdpsi_stack(manifests[stack.id], stack, config.psi) for stack in config.stacks}
             report["runtime_policies"] = {
                 "snap_gpt": snap_runner.describe_runtime_policy(),
                 "stamps": {stack.id: stamps_runner.describe_execution_plan(stack) for stack in config.stacks},
+                "cdpsi": {stack.id: cdpsi_plans[stack.id].describe() for stack in config.stacks},
             }
             _persist_report(report, context)
+            for stack_config in config.stacks:
+                cdpsi_plans[stack_config.id].validate()
 
             mark_stage(report, "snap_preprocess", "running")
             _persist_report(report, context)
             snap_outputs: dict[str, Any] = {}
+            subset_snap_outputs: dict[str, Any] = {}
             snap_cleanup_observer = _cleanup_report_observer(report, context)
             for stack_config in config.stacks:
                 manifest = manifests[stack_config.id]
-                snap_outputs[stack_config.id] = snap_runner.run_stack(
-                    context,
-                    manifest,
-                    stack_config,
-                    aoi_wkt,
-                    cleanup_observer=snap_cleanup_observer,
-                )
-                _record_cleanup_warnings(report, getattr(snap_outputs[stack_config.id], "cleanup_warnings", ()))
+                if stop_after != "snap_preprocess" and stamps_runner.has_reusable_outputs(context, stack_config.id):
+                    snap_outputs[stack_config.id] = SimpleNamespace(
+                        stamps_export_dir=context.snap_dir / stack_config.id / "stamps_export",
+                        cleanup_warnings=(),
+                    )
+                    LOGGER.info(
+                        "Skipping SNAP preprocessing because reusable StaMPS outputs already exist | stack_id=%s",
+                        stack_config.id,
+                    )
+                else:
+                    snap_outputs[stack_config.id] = snap_runner.run_stack(
+                        context,
+                        manifest,
+                        stack_config,
+                        aoi_wkt,
+                        cleanup_observer=snap_cleanup_observer,
+                    )
+                    _record_cleanup_warnings(report, getattr(snap_outputs[stack_config.id], "cleanup_warnings", ()))
                 _persist_report(report, context)
+                for subset_plan in cdpsi_plans[stack_config.id].subset_runs:
+                    subset_export_dir = context.snap_dir / subset_plan.stack_id / "stamps_export"
+                    if config.cache.reuse_snap_outputs and is_valid_snap_export_dir(subset_export_dir):
+                        subset_snap_outputs[subset_plan.stack_id] = SimpleNamespace(
+                            stamps_export_dir=subset_export_dir,
+                            cleanup_warnings=(),
+                        )
+                        LOGGER.info(
+                            "Reusing SNAP preprocessing for CDPSI subset | stack_id=%s subset_stack_id=%s export_dir=%s",
+                            stack_config.id,
+                            subset_plan.stack_id,
+                            subset_export_dir,
+                        )
+                    else:
+                        subset_snap_outputs[subset_plan.stack_id] = snap_runner.run_stack(
+                            context,
+                            subset_plan.manifest,
+                            subset_plan.stack,
+                            aoi_wkt,
+                            cleanup_observer=snap_cleanup_observer,
+                        )
+                        _record_cleanup_warnings(
+                            report,
+                            getattr(subset_snap_outputs[subset_plan.stack_id], "cleanup_warnings", ()),
+                        )
+                    _persist_report(report, context)
             mark_stage(report, "snap_preprocess", "completed")
             _persist_report(report, context)
             if stop_after == "snap_preprocess":
@@ -158,6 +201,7 @@ def run_pipeline(
             mark_stage(report, "stamps", "running")
             _persist_report(report, context)
             stamps_outputs: dict[str, Any] = {}
+            subset_stamps_outputs: dict[str, Any] = {}
             stamps_cleanup_observer = _cleanup_report_observer(report, context)
             for stack_config in config.stacks:
                 manifest = manifests[stack_config.id]
@@ -168,7 +212,21 @@ def run_pipeline(
                     snap_outputs[stack_config.id].stamps_export_dir,
                     cleanup_observer=stamps_cleanup_observer,
                 )
+                _record_cleanup_warnings(report, getattr(stamps_outputs[stack_config.id], "cleanup_warnings", ()))
                 _persist_report(report, context)
+                for subset_plan in cdpsi_plans[stack_config.id].subset_runs:
+                    subset_stamps_outputs[subset_plan.stack_id] = stamps_runner.run_stack(
+                        context,
+                        subset_plan.manifest,
+                        subset_plan.stack,
+                        subset_snap_outputs[subset_plan.stack_id].stamps_export_dir,
+                        cleanup_observer=stamps_cleanup_observer,
+                    )
+                    _record_cleanup_warnings(
+                        report,
+                        getattr(subset_stamps_outputs[subset_plan.stack_id], "cleanup_warnings", ()),
+                    )
+                    _persist_report(report, context)
             mark_stage(report, "stamps", "completed")
             _persist_report(report, context)
             if stop_after == "stamps":
@@ -182,22 +240,41 @@ def run_pipeline(
                 raw_points = load_ps_points(stamps_outputs[stack_config.id].ps_points_csv)
                 raw_points_path = context.points_dir / f"{stack_config.id}_ps_raw.parquet"
                 write_vector(raw_points, raw_points_path)
-                emergent_points = detect_emergent_ps(raw_points, config.psi)
-                emergent_points["stack_id"] = stack_config.id
-                emergent_points_path = context.points_dir / f"{stack_config.id}_ps_emergent.parquet"
-                write_vector(emergent_points, emergent_points_path)
+                subset_points_by_stack_id = {
+                    subset_plan.stack_id: load_ps_points(subset_stamps_outputs[subset_plan.stack_id].ps_points_csv)
+                    for subset_plan in cdpsi_plans[stack_config.id].subset_runs
+                }
+                cdpsi_artifacts = build_cdpsi_artifacts(
+                    raw_points,
+                    cdpsi_plans[stack_config.id],
+                    subset_points_by_stack_id,
+                    config.psi,
+                )
+                change_points = cdpsi_artifacts.change_points.copy()
+                change_points["stack_id"] = stack_config.id
+                change_points_path = context.points_dir / f"{stack_config.id}_cdpsi_change_points.parquet"
+                write_vector(change_points, change_points_path)
+
+                emergence_points = cdpsi_artifacts.emergence_points.copy()
+                emergence_points["stack_id"] = stack_config.id
+                emergence_points_path = context.points_dir / f"{stack_config.id}_cdpsi_emergence_candidates.parquet"
+                write_vector(emergence_points, emergence_points_path)
                 if config.artifact_lifecycle.enabled and config.artifact_lifecycle.purge_stamps_workspace_after_parse:
-                    cleanup_records = cleanup_stamps_workspace(
-                        stamps_outputs[stack_config.id].root,
-                        keep_paths=(
-                            stamps_outputs[stack_config.id].ps_points_csv,
-                            stamps_outputs[stack_config.id].ps_timeseries_csv,
-                        ),
-                        logger=LOGGER,
-                    )
-                    _record_cleanup_events(report, cleanup_records)
-                    _persist_report(report, context)
-                stack_points.append(emergent_points)
+                    for outputs in (
+                        [stamps_outputs[stack_config.id]]
+                        + [subset_stamps_outputs[subset_plan.stack_id] for subset_plan in cdpsi_plans[stack_config.id].subset_runs]
+                    ):
+                        cleanup_records = cleanup_stamps_workspace(
+                            outputs.root,
+                            keep_paths=(
+                                outputs.ps_points_csv,
+                                outputs.ps_timeseries_csv,
+                            ),
+                            logger=LOGGER,
+                        )
+                        _record_cleanup_events(report, cleanup_records)
+                        _persist_report(report, context)
+                stack_points.append(emergence_points)
             psi_points = (
                 gpd.GeoDataFrame(pd.concat(stack_points, ignore_index=True), crs=stack_points[0].crs)
                 if len(stack_points) > 1

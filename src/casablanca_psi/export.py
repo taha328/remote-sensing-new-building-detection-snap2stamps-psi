@@ -14,9 +14,9 @@ def export_fusion_outputs(outputs: FusionOutputs, root: Path, export_config: Exp
     root.mkdir(parents=True, exist_ok=True)
     if export_config.save_intermediate_points:
         for extension in export_config.vector_formats:
-            write_vector(outputs.points, root / f"psi_candidates.{extension}")
+            write_vector(outputs.points, root / f"cdpsi_emergence_candidates.{extension}")
     for extension in export_config.vector_formats:
-        write_vector(outputs.polygons, root / f"new_building_candidates.{extension}")
+        write_vector(outputs.polygons, root / f"fused_change_candidates.{extension}")
 
 
 def write_run_summary(summary: dict, path: Path) -> None:

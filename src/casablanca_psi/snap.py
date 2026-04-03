@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-from datetime import date as calendar_date
+from datetime import date as calendar_date, datetime
 from dataclasses import dataclass
 from pathlib import Path
+import importlib
 import logging
 import re
 import shutil
 import subprocess
 from typing import Any, Callable
 from xml.etree import ElementTree as ET
+import zipfile
 
 from casablanca_psi.artifact_lifecycle import (
     CleanupRecord,
@@ -31,6 +33,12 @@ from casablanca_psi.manifests import (
 from casablanca_psi.run_context import RunContext
 
 LOGGER = logging.getLogger(__name__)
+_EGM96_ZIP_NAME = "ww15mgh_b.zip"
+_S1_ORBIT_FILENAME_PATTERN = re.compile(
+    r"^(?P<platform>S1[AB])_OPER_AUX_(?P<orbit_kind>POEORB|RESORB)_OPOD_"
+    r"(?P<generated>\d{8}T\d{6})_V(?P<valid_from>\d{8}T\d{6})_(?P<valid_to>\d{8}T\d{6})"
+    r"\.EOF(?:\.zip)?$"
+)
 COREG_STACK_BAND_PATTERN = re.compile(
     r"^(?P<prefix>[iq]_[^_]+)_slv1_(?P<slave_date>\d{2}[A-Za-z]{3}\d{4})_slv(?P<stack_index>\d+)_(?P<master_date>\d{2}[A-Za-z]{3}\d{4})$"
 )
@@ -118,6 +126,12 @@ class SnapGraphRunner:
             )
         if not self.config.dem.path.exists():
             raise FileNotFoundError(f"Configured DEM path does not exist: {self.config.dem.path}")
+        user_dir = self._resolved_snap_user_dir()
+        if user_dir is not None:
+            user_dir.mkdir(parents=True, exist_ok=True)
+        if self.config.dem.vertical_datum.strip().upper() == "EGM96":
+            egm96_path = self._ensure_egm96_auxdata()
+            LOGGER.info("Using SNAP EGM96 auxdata | path=%s", egm96_path)
 
     def _graph_path(self, graph_name: str) -> Path:
         path = (self.config.snap.graph_root / graph_name).resolve()
@@ -178,11 +192,259 @@ class SnapGraphRunner:
             return None
         return self.config.snap.user_dir.expanduser().resolve()
 
+    def _resolved_auxdata_root(self) -> Path | None:
+        user_dir = self._resolved_snap_user_dir()
+        if user_dir is None:
+            return None
+        return user_dir / "auxdata"
+
+    def _resolved_orbit_auxdata_root(self) -> Path | None:
+        auxdata_root = self._resolved_auxdata_root()
+        if auxdata_root is None:
+            return None
+        return auxdata_root / "Orbits" / "Sentinel-1"
+
+    def _egm96_target_path(self) -> Path | None:
+        auxdata_root = self._resolved_auxdata_root()
+        if auxdata_root is None:
+            return None
+        return auxdata_root / "dem" / "egm96" / _EGM96_ZIP_NAME
+
+    def _egm96_candidate_paths(self) -> tuple[Path, ...]:
+        candidates: list[Path] = []
+        target = self._egm96_target_path()
+        if target is not None:
+            candidates.append(target)
+        home = Path.home()
+        for candidate in (
+            home / ".snap" / "auxdata" / "dem" / "egm96" / _EGM96_ZIP_NAME,
+            home / "Library" / "Application Support" / "SNAP" / "auxdata" / "dem" / "egm96" / _EGM96_ZIP_NAME,
+        ):
+            if candidate not in candidates:
+                candidates.append(candidate)
+        return tuple(candidates)
+
+    def _orbit_candidate_roots(self) -> tuple[Path, ...]:
+        candidates: list[Path] = []
+        target = self._resolved_orbit_auxdata_root()
+        if target is not None:
+            candidates.append(target)
+        home = Path.home()
+        for candidate in (
+            home / ".snap" / "auxdata" / "Orbits" / "Sentinel-1",
+            home / "Library" / "Application Support" / "SNAP" / "auxdata" / "Orbits" / "Sentinel-1",
+        ):
+            if candidate not in candidates:
+                candidates.append(candidate)
+        return tuple(candidates)
+
+    @staticmethod
+    def _is_valid_egm96_zip(path: Path) -> bool:
+        return path.exists() and path.is_file() and zipfile.is_zipfile(path)
+
+    @staticmethod
+    def _parse_scene_acquisition_start(scene: SlcScene) -> datetime:
+        return datetime.fromisoformat(scene.acquisition_start.replace("Z", "+00:00"))
+
+    @staticmethod
+    def _scene_platform_id(scene: SlcScene) -> str:
+        normalized = scene.platform.replace("_", "-").upper()
+        if normalized.endswith("1A"):
+            return "S1A"
+        if normalized.endswith("1B"):
+            return "S1B"
+        return normalized
+
+    @staticmethod
+    def _parse_orbit_file_validity(path: Path) -> tuple[str, str, datetime, datetime] | None:
+        match = _S1_ORBIT_FILENAME_PATTERN.match(path.name)
+        if match is None:
+            return None
+        return (
+            match.group("platform"),
+            match.group("orbit_kind"),
+            datetime.strptime(match.group("valid_from"), "%Y%m%dT%H%M%S"),
+            datetime.strptime(match.group("valid_to"), "%Y%m%dT%H%M%S"),
+        )
+
+    @staticmethod
+    def _is_orbit_file_covering_scene(path: Path, scene: SlcScene, orbit_kind: str) -> bool:
+        parsed = SnapGraphRunner._parse_orbit_file_validity(path)
+        if parsed is None:
+            return False
+        platform, parsed_kind, valid_from, valid_to = parsed
+        if platform != SnapGraphRunner._scene_platform_id(scene) or parsed_kind != orbit_kind:
+            return False
+        acquisition = SnapGraphRunner._parse_scene_acquisition_start(scene).replace(tzinfo=None)
+        return valid_from <= acquisition <= valid_to
+
+    def _orbit_target_dir(self, scene: SlcScene, orbit_kind: str) -> Path | None:
+        orbit_root = self._resolved_orbit_auxdata_root()
+        if orbit_root is None:
+            return None
+        acquisition = self._parse_scene_acquisition_start(scene)
+        return orbit_root / orbit_kind / self._scene_platform_id(scene) / acquisition.strftime("%Y") / acquisition.strftime("%m")
+
+    def _find_local_orbit_file(self, scene: SlcScene, orbit_kind: str) -> Path | None:
+        target_dir = self._orbit_target_dir(scene, orbit_kind)
+        candidate_roots = self._orbit_candidate_roots()
+        search_dirs: list[Path] = []
+        if target_dir is not None:
+            search_dirs.append(target_dir)
+        acquisition = self._parse_scene_acquisition_start(scene)
+        year = acquisition.strftime("%Y")
+        for root in candidate_roots:
+            month_root = root / orbit_kind / self._scene_platform_id(scene) / year
+            if not month_root.exists():
+                continue
+            for month_dir in sorted(path for path in month_root.iterdir() if path.is_dir()):
+                if month_dir not in search_dirs:
+                    search_dirs.append(month_dir)
+        for directory in search_dirs:
+            for candidate in sorted(directory.glob("*.EOF*")):
+                if self._is_orbit_file_covering_scene(candidate, scene, orbit_kind):
+                    return candidate.resolve()
+        return None
+
+    def _official_orbit_s3_prefix(self, scene: SlcScene, orbit_kind: str) -> str:
+        acquisition = self._parse_scene_acquisition_start(scene)
+        return f"Sentinel-1/AUX/AUX_{orbit_kind}/{acquisition:%Y/%m}/"
+
+    def _official_orbit_s3_key(self, scene: SlcScene, orbit_kind: str) -> tuple[str, str] | None:
+        acquisition_module = importlib.import_module("casablanca_psi.acquisition")
+        s3_client_factory = getattr(acquisition_module, "_s3_client")
+        endpoints = (
+            self.config.acquisition.s3.endpoint_url,
+            *self.config.acquisition.s3.fallback_endpoint_urls,
+        )
+        bucket = self.config.acquisition.s3.bucket
+        prefix = self._official_orbit_s3_prefix(scene, orbit_kind)
+        for endpoint in endpoints:
+            client = None
+            try:
+                client = s3_client_factory(self.config, endpoint_url=endpoint)
+                paginator = client.get_paginator("list_objects_v2")
+                matches: list[str] = []
+                for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+                    for entry in page.get("Contents", ()):
+                        key = entry.get("Key")
+                        if not isinstance(key, str):
+                            continue
+                        if self._is_orbit_file_covering_scene(Path(key), scene, orbit_kind):
+                            matches.append(key)
+                if matches:
+                    matches.sort()
+                    return endpoint, matches[0]
+            except Exception as exc:
+                LOGGER.warning(
+                    "Unable to query official Sentinel-1 orbit auxdata | scene=%s orbit_kind=%s endpoint=%s prefix=%s error=%s",
+                    scene.scene_id,
+                    orbit_kind,
+                    endpoint,
+                    prefix,
+                    exc.__class__.__name__,
+                )
+            finally:
+                close_client = getattr(client, "close", None)
+                if callable(close_client):
+                    close_client()
+        return None
+
+    def _download_official_orbit_auxdata(self, scene: SlcScene, orbit_kind: str, target_dir: Path) -> Path | None:
+        official_key = self._official_orbit_s3_key(scene, orbit_kind)
+        if official_key is None:
+            return None
+        endpoint, key = official_key
+        target = target_dir / Path(key).name
+        if target.exists() and self._is_orbit_file_covering_scene(target, scene, orbit_kind):
+            return target.resolve()
+
+        acquisition_module = importlib.import_module("casablanca_psi.acquisition")
+        s3_client_factory = getattr(acquisition_module, "_s3_client")
+        client = None
+        body = None
+        temp_path = target.with_suffix(f"{target.suffix}.tmp")
+        try:
+            client = s3_client_factory(self.config, endpoint_url=endpoint)
+            response = client.get_object(Bucket=self.config.acquisition.s3.bucket, Key=key)
+            body = response["Body"]
+            with temp_path.open("wb") as stream:
+                shutil.copyfileobj(body, stream)
+            temp_path.replace(target)
+            LOGGER.info(
+                "Seeded Sentinel-1 orbit auxdata from official CDSE S3 | scene=%s orbit_kind=%s endpoint=%s key=%s path=%s",
+                scene.scene_id,
+                orbit_kind,
+                endpoint,
+                key,
+                target,
+            )
+            return target.resolve()
+        finally:
+            if body is not None:
+                body.close()
+            close_client = getattr(client, "close", None)
+            if callable(close_client):
+                close_client()
+            if temp_path.exists():
+                temp_path.unlink(missing_ok=True)
+
+    def _ensure_egm96_auxdata(self) -> Path:
+        target = self._egm96_target_path()
+        if target is None:
+            raise FileNotFoundError(
+                "SNAP EGM96 auxdata requires snap.userdir so AuxDataPath can be resolved."
+            )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if self._is_valid_egm96_zip(target):
+            return target.resolve()
+        for candidate in self._egm96_candidate_paths():
+            if candidate == target:
+                continue
+            if not self._is_valid_egm96_zip(candidate):
+                continue
+            shutil.copy2(candidate, target)
+            return target.resolve()
+        raise FileNotFoundError(
+            "SNAP EGM96 auxdata is missing. Expected a valid "
+            f"{_EGM96_ZIP_NAME} at {target} or in one of: "
+            + ", ".join(str(path) for path in self._egm96_candidate_paths() if path != target)
+        )
+
+    def _ensure_orbit_auxdata_for_scene(self, scene: SlcScene) -> Path:
+        orbit_kind = "POEORB" if self.config.snap.orbit_source == "precise" else "RESORB"
+        target_dir = self._orbit_target_dir(scene, orbit_kind)
+        if target_dir is None:
+            raise FileNotFoundError(
+                "SNAP orbit auxdata requires snap.userdir so AuxDataPath can be resolved."
+            )
+        target_dir.mkdir(parents=True, exist_ok=True)
+        existing = self._find_local_orbit_file(scene, orbit_kind)
+        if existing is None:
+            existing = self._download_official_orbit_auxdata(scene, orbit_kind, target_dir)
+        if existing is None:
+            raise FileNotFoundError(
+                f"No local Sentinel-1 {orbit_kind} orbit file covers {scene.acquisition_start} for {scene.platform}. "
+                f"Expected it under {target_dir} or one of: "
+                + ", ".join(str(root) for root in self._orbit_candidate_roots() if root != self._resolved_orbit_auxdata_root())
+                + f". Also checked official CDSE AUX_{orbit_kind} S3 path prefix "
+                + self._official_orbit_s3_prefix(scene, orbit_kind)
+            )
+        if existing.parent != target_dir:
+            target = target_dir / existing.name
+            if not target.exists():
+                shutil.copy2(existing, target)
+            return target.resolve()
+        return existing
+
     def _runtime_property_java_options(self) -> list[str]:
         properties = [f"-Dsnap.parallelism={self.config.snap.workers}"]
         user_dir = self._resolved_snap_user_dir()
         if user_dir is not None:
             properties.append(f"-Dsnap.userdir={user_dir}")
+        auxdata_root = self._resolved_auxdata_root()
+        if auxdata_root is not None:
+            properties.append(f"-DAuxDataPath={auxdata_root}")
         if self.config.snap.default_tile_size_px is not None:
             properties.append(f"-Dsnap.jai.defaultTileSize={self.config.snap.default_tile_size_px}")
         return properties
@@ -202,6 +464,8 @@ class SnapGraphRunner:
     def describe_runtime_policy(self) -> dict[str, Any]:
         installed_options, runtime_options, overrides = self._effective_java_options()
         user_dir = self._resolved_snap_user_dir()
+        auxdata_root = self._resolved_auxdata_root()
+        egm96_target = self._egm96_target_path()
         return {
             "gpt_path": str(self._resolved_gpt_path()),
             "gpt_vmoptions_path": str(self._gpt_vmoptions_path()),
@@ -215,7 +479,10 @@ class SnapGraphRunner:
             "workers": self.config.snap.workers,
             "clear_tile_cache_after_row": self.config.snap.clear_tile_cache_after_row,
             "snap_user_dir": str(user_dir) if user_dir is not None else None,
-            "auxdata_root": str(user_dir / "auxdata") if user_dir is not None else None,
+            "auxdata_root": str(auxdata_root) if auxdata_root is not None else None,
+            "orbit_auxdata_root": str(self._resolved_orbit_auxdata_root()) if self._resolved_orbit_auxdata_root() is not None else None,
+            "egm96_auxdata_path": str(egm96_target) if egm96_target is not None else None,
+            "egm96_auxdata_exists": self._is_valid_egm96_zip(egm96_target) if egm96_target is not None else False,
             "default_tile_size_px": self.config.snap.default_tile_size_px,
         }
 
@@ -381,6 +648,40 @@ class SnapGraphRunner:
     def _product_list_parameter(products: list[Path]) -> str:
         return ",".join(str(product) for product in products)
 
+    def _resolve_scene_zip_path(
+        self,
+        *,
+        context: RunContext,
+        manifest: StackManifest,
+        scene: SlcScene,
+    ) -> Path:
+        if scene.local_path:
+            candidate = Path(scene.local_path).expanduser()
+            if candidate.exists() and candidate.is_file() and candidate.stat().st_size > 0:
+                return candidate.resolve()
+
+        expected = slc_scene_zip_path(context, manifest.stack_id, scene)
+        if expected.exists() and expected.is_file() and expected.stat().st_size > 0:
+            return expected.resolve()
+
+        candidates: list[Path] = []
+        for candidate in sorted(context.slc_dir.glob(f"**/{scene.product_name}.zip"), key=lambda path: (len(path.parts), str(path))):
+            if candidate == expected:
+                continue
+            try:
+                if not candidate.is_file() or candidate.stat().st_size <= 0:
+                    continue
+            except OSError:
+                continue
+            candidates.append(candidate.resolve())
+        if candidates:
+            return candidates[0]
+
+        raise FileNotFoundError(
+            "No local SLC ZIP is available for SNAP preprocessing | "
+            f"stack_id={manifest.stack_id} scene_id={scene.scene_id} expected={expected}"
+        )
+
     def _prepare_job(
         self,
         *,
@@ -396,7 +697,7 @@ class SnapGraphRunner:
             name=f"prepare-{scene.scene_id}-{iw_swath}",
             graph_path=self._graph_path("prepare_slc_stack.xml"),
             parameters={
-                "inputFile": str(slc_scene_zip_path(context, manifest.stack_id, scene)),
+                "inputFile": str(self._resolve_scene_zip_path(context=context, manifest=manifest, scene=scene)),
                 "orbitType": "Sentinel Precise (Auto Download)"
                 if self.config.snap.orbit_source == "precise"
                 else "Sentinel Restituted (Auto Download)",
@@ -1654,7 +1955,7 @@ class SnapGraphRunner:
                 raise RuntimeError(
                     f"Missing reusable interferogram export checkpoint required to build the final StaMPS stack product: {export_ifg}"
                 )
-            if need_final_coreg:
+            if need_final_coreg or reuse_final_coreg:
                 coreg_export_products.append(export_coreg)
             if need_final_ifg:
                 if index == 0:
@@ -1690,6 +1991,19 @@ class SnapGraphRunner:
                         raise RuntimeError(
                             "SNAP export assembly did not produce a structurally valid final interferogram stack input: "
                             f"{ifg_stack_input}"
+                        )
+                    if self.config.artifact_lifecycle.enabled:
+                        self._extend_cleanup_records(
+                            cleanup_records,
+                            self._cleanup_superseded_final_stack_source(
+                                superseded_product=export_ifg,
+                                replacement_product=ifg_stack_input,
+                                description=(
+                                    "Final SNAP interferogram export checkpoint for "
+                                    f"{master_scene.acquisition_date}/{secondary.acquisition_date}"
+                                ),
+                            ),
+                            cleanup_observer,
                         )
                     final_ifg_sources.append(ifg_stack_input)
 
@@ -1731,8 +2045,32 @@ class SnapGraphRunner:
                 secondaries=secondaries,
                 polarization=polarization,
             )
+            if self.config.artifact_lifecycle.enabled:
+                self._extend_cleanup_records(
+                    cleanup_records,
+                    self._cleanup_superseded_final_export_sources(
+                        superseded_products=coreg_export_products,
+                        replacement_product=final_coreg,
+                        description="Final SNAP coreg export assembly source checkpoints",
+                    ),
+                    cleanup_observer,
+                )
         if need_final_coreg and not are_valid_dimap_products((final_coreg,)):
             raise RuntimeError(f"SNAP export assembly did not produce a structurally valid final coreg product: {final_coreg}")
+        if (
+            reuse_final_coreg
+            and self.config.artifact_lifecycle.enabled
+            and are_valid_dimap_products((final_coreg,))
+        ):
+            self._extend_cleanup_records(
+                cleanup_records,
+                self._cleanup_superseded_final_export_sources(
+                    superseded_products=coreg_export_products,
+                    replacement_product=final_coreg,
+                    description="Final SNAP coreg export assembly source checkpoints",
+                ),
+                cleanup_observer,
+            )
 
         if need_final_ifg:
             self._run_graph(
@@ -1759,6 +2097,15 @@ class SnapGraphRunner:
                     superseded_products=export_ifg_products,
                     replacement_product=final_ifg,
                     description="Final SNAP interferogram export assembly source checkpoints",
+                ),
+                cleanup_observer,
+            )
+            self._extend_cleanup_records(
+                cleanup_records,
+                self._cleanup_superseded_final_export_sources(
+                    superseded_products=final_ifg_sources[1:],
+                    replacement_product=final_ifg,
+                    description="Final SNAP interferogram stack input checkpoints",
                 ),
                 cleanup_observer,
             )
@@ -1968,14 +2315,15 @@ class SnapGraphRunner:
         product = self._prepared_product(prepared_dir, master, iw_swath)
         if not product.exists():
             return []
-        source_zip = slc_scene_zip_path(context, manifest.stack_id, master)
-        if not source_zip.exists():
+        try:
+            source_zip = self._resolve_scene_zip_path(context=context, manifest=manifest, scene=master)
+        except FileNotFoundError:
             LOGGER.warning(
                 "Keeping prepared SNAP master because raw SLC source is unavailable for safe regeneration | stack_id=%s swath=%s master=%s source_zip=%s",
                 manifest.stack_id,
                 iw_swath,
                 master.scene_id,
-                source_zip,
+                slc_scene_zip_path(context, manifest.stack_id, master),
             )
             return []
         return delete_paths(
@@ -2001,14 +2349,15 @@ class SnapGraphRunner:
         product = self._prepared_product(prepared_dir, secondary, iw_swath)
         if not product.exists():
             return []
-        source_zip = slc_scene_zip_path(context, manifest.stack_id, secondary)
-        if not source_zip.exists():
+        try:
+            source_zip = self._resolve_scene_zip_path(context=context, manifest=manifest, scene=secondary)
+        except FileNotFoundError:
             LOGGER.warning(
                 "Keeping prepared SNAP secondary because raw SLC source is unavailable for safe regeneration | stack_id=%s swath=%s secondary=%s source_zip=%s",
                 manifest.stack_id,
                 iw_swath,
                 secondary.scene_id,
-                source_zip,
+                slc_scene_zip_path(context, manifest.stack_id, secondary),
             )
             return []
         return delete_paths(
@@ -2167,10 +2516,10 @@ class SnapGraphRunner:
         master_scene = select_master_scene(manifest, stack.master_date)
         secondaries = secondary_scenes(manifest, master_scene)
         stack_polarization = self._single_stack_polarization(stack.polarization)
-        if len(secondaries) < 4:
+        if len(secondaries) < 2:
             raise RuntimeError(
                 f"Stack {manifest.stack_id} has only {len(secondaries)} secondary scenes. "
-                "SNAP StaMPS Export requires one reference plus at least four secondary images."
+                "This single-master PSI/CDPSI workflow requires one reference plus at least two secondary images."
             )
 
         if self.config.cache.reuse_snap_outputs and self._has_reusable_export(export_dir):
@@ -2211,6 +2560,17 @@ class SnapGraphRunner:
             )
 
         all_scenes = [master_scene, *secondaries]
+        seeded_orbit_paths: set[Path] = set()
+        for scene in all_scenes:
+            orbit_path = self._ensure_orbit_auxdata_for_scene(scene)
+            if orbit_path not in seeded_orbit_paths:
+                LOGGER.info(
+                    "Using SNAP orbit auxdata | scene=%s orbit_source=%s path=%s",
+                    scene.scene_id,
+                    self.config.snap.orbit_source,
+                    orbit_path,
+                )
+                seeded_orbit_paths.add(orbit_path)
         coreg_products: list[Path] = self._valid_dimap_products_in_dir(coreg_dir) if export_assembly_started else []
         ifg_products: list[Path] = self._valid_dimap_products_in_dir(ifg_dir) if export_assembly_started else []
         if export_assembly_started:

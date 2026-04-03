@@ -207,6 +207,7 @@ class StaMPSConfig(BaseModel):
     max_parallel_patch_workers: int = Field(default=1, ge=1)
     range_overlap: int = Field(default=50, ge=0)
     azimuth_overlap: int = Field(default=50, ge=0)
+    merge_resample_size: int = Field(default=0, ge=0)
     mask_file: Path | None = None
 
     @model_validator(mode="before")
@@ -224,12 +225,10 @@ class StaMPSConfig(BaseModel):
 class PsiDetectionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    min_temporal_coherence: float = 0.72
-    min_post_stability_fraction: float = 0.6
-    max_pre_stability_fraction: float = 0.2
-    min_stability_gain: float = 0.35
-    min_residual_height_support_m: float = 4.0
-    min_points_per_cluster: int = 3
+    method: Literal["cdpsi"] = "cdpsi"
+    minimum_subset_images: int = Field(default=3, ge=3)
+    thresholding_mode: Literal["gaussian_3sigma"] = "gaussian_3sigma"
+    sigma_multiplier: float = Field(default=3.0, gt=0.0)
     cluster_buffer_m: float = 12.0
 
 

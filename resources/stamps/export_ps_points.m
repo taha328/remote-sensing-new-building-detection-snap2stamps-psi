@@ -18,6 +18,12 @@ n_ps = double(ps.n_ps);
 point_id = (1:n_ps)';
 x_local_m = nan(n_ps, 1);
 y_local_m = nan(n_ps, 1);
+azimuth_index = nan(n_ps, 1);
+range_index = nan(n_ps, 1);
+if isfield(ps, 'ij') && size(ps.ij, 2) >= 3
+    azimuth_index = double(ps.ij(:, 2));
+    range_index = double(ps.ij(:, 3));
+end
 if isfield(ps, 'xy') && size(ps.xy, 2) >= 3
     x_local_m = double(ps.xy(:, 2));
     y_local_m = double(ps.xy(:, 3));
@@ -78,39 +84,34 @@ master_day = repmat(double(ps.master_day), n_ps, 1);
 n_ifg = repmat(double(ps.n_ifg), n_ps, 1);
 n_image = repmat(double(ps.n_image), n_ps, 1);
 
-% These fields are intentionally left empty until a project-specific
-% emergence derivation is implemented from actual StaMPS time-series outputs.
-pre_stability_fraction = nan(n_ps, 1);
-post_stability_fraction = nan(n_ps, 1);
-residual_height_m = nan(n_ps, 1);
+warning('export_ps_points:emergenceMetricsUnavailable', ...
+    ['Exporting only raw PSI point metrics. Emergence metrics such as pre/post stability, ', ...
+     'first stable epoch, and residual height are not emitted by this contract until they are ', ...
+     'derived from actual StaMPS time-series outputs.']);
 
 points_csv = fullfile(outdir, 'ps_points.csv');
 fid = fopen(points_csv, 'w');
 if fid < 0
     error('Unable to open ps_points.csv for writing');
 end
-fprintf(fid, 'point_id,x_local_m,y_local_m,lon,lat,temporal_coherence,scene_elevation_m,dem_error_phase_per_m,mean_velocity_mm_yr,pre_stability_fraction,post_stability_fraction,first_stable_epoch,residual_height_m,master_day,n_ifg,n_image\n');
+fprintf(fid, 'point_id,x_local_m,y_local_m,azimuth_index,range_index,lon,lat,temporal_coherence,scene_elevation_m,dem_error_phase_per_m,mean_velocity_mm_yr,master_day,n_ifg,n_image\n');
 for i = 1:n_ps
-    fprintf(
-        fid,
-        '%d,%.6f,%.6f,%.10f,%.10f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%s,%.6f,%.0f,%.0f,%.0f\n',
-        point_id(i),
-        x_local_m(i),
-        y_local_m(i),
-        lon(i),
-        lat(i),
-        temporal_coherence(i),
-        scene_elevation_m(i),
-        dem_error_phase_per_m(i),
-        mean_velocity_mm_yr(i),
-        pre_stability_fraction(i),
-        post_stability_fraction(i),
-        '',
-        residual_height_m(i),
-        master_day(i),
-        n_ifg(i),
-        n_image(i)
-    );
+    fprintf(fid, ...
+        '%d,%.6f,%.6f,%.0f,%.0f,%.10f,%.10f,%.6f,%.6f,%.6f,%.6f,%.0f,%.0f,%.0f\n', ...
+        point_id(i), ...
+        x_local_m(i), ...
+        y_local_m(i), ...
+        azimuth_index(i), ...
+        range_index(i), ...
+        lon(i), ...
+        lat(i), ...
+        temporal_coherence(i), ...
+        scene_elevation_m(i), ...
+        dem_error_phase_per_m(i), ...
+        mean_velocity_mm_yr(i), ...
+        master_day(i), ...
+        n_ifg(i), ...
+        n_image(i));
 end
 fclose(fid);
 
@@ -122,5 +123,3 @@ end
 fprintf(fid, 'point_id,epoch,metric_name,value\n');
 fclose(fid);
 end
-
-export_ps_points();

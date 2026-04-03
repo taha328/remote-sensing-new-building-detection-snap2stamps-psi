@@ -1470,6 +1470,157 @@ def test_download_stack_scenes_reuses_completed_zip_without_auth_when_nothing_is
     assert target.read_bytes() == b"completed"
 
 
+def test_download_stack_scenes_reuses_completed_zip_from_prior_attempt_without_auth(tmp_path, monkeypatch) -> None:
+    root = Path(__file__).resolve().parents[2]
+    config = load_config(root / "configs" / "psi_casablanca_slc.yaml")
+    config.cache.reuse_downloads = True
+
+    source_context = RunContext.create(
+        config,
+        tmp_path,
+        run_dir=tmp_path / "runs_psi" / "previous-group" / "attempt-001",
+    )
+    source_context.ensure_directories()
+    context = RunContext.create(
+        config,
+        tmp_path,
+        run_dir=tmp_path / "runs_psi" / "new-group" / "attempt-001",
+    )
+    context.ensure_directories()
+
+    scene = SlcScene(
+        scene_id="SCENE_REUSE",
+        product_name="SCENE_REUSE",
+        acquisition_start="2024-01-01T00:00:00Z",
+        acquisition_stop="2024-01-01T00:00:10Z",
+        acquisition_date="2024-01-01",
+        direction="ascending",
+        relative_orbit=147,
+        polarization="VV+VH",
+        swath_mode="IW",
+        product_type="IW_SLC__1S",
+        processing_level="L1",
+        platform="Sentinel-1A",
+        asset_name="product",
+        href="https://download.example.invalid/scene.zip",
+    )
+    manifest = StackManifest(
+        stack_id="asc_rel147_vv",
+        direction="ascending",
+        relative_orbit=147,
+        product_type="SLC",
+        scenes=[scene],
+    )
+    source = source_context.slc_dir / manifest.stack_id / f"{scene.product_name}.zip"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"completed-from-prior-attempt")
+
+    import casablanca_psi.acquisition as acquisition_module
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("ensure_download_auth should not run when every ZIP is satisfied by cross-attempt reuse")
+
+    monkeypatch.setattr(acquisition_module, "ensure_download_auth", fail_if_called)
+
+    records = download_stack_scenes(config, context, manifest)
+
+    target = context.slc_dir / manifest.stack_id / f"{scene.product_name}.zip"
+    assert len(records) == 1
+    assert records[0].path == target
+    assert target.exists()
+    assert target.read_bytes() == b"completed-from-prior-attempt"
+    assert target.stat().st_ino == source.stat().st_ino
+    assert target.stat().st_nlink >= 2
+
+
+def test_download_stack_scenes_reuses_prior_attempt_zip_and_downloads_only_missing_scene(tmp_path, monkeypatch) -> None:
+    root = Path(__file__).resolve().parents[2]
+    config = load_config(root / "configs" / "psi_casablanca_slc.yaml")
+    config.cache.reuse_downloads = True
+
+    source_context = RunContext.create(
+        config,
+        tmp_path,
+        run_dir=tmp_path / "runs_psi" / "previous-group" / "attempt-001",
+    )
+    source_context.ensure_directories()
+    context = RunContext.create(
+        config,
+        tmp_path,
+        run_dir=tmp_path / "runs_psi" / "new-group" / "attempt-001",
+    )
+    context.ensure_directories()
+
+    reused_scene = SlcScene(
+        scene_id="SCENE_REUSED",
+        product_name="SCENE_REUSED",
+        acquisition_start="2024-01-01T00:00:00Z",
+        acquisition_stop="2024-01-01T00:00:10Z",
+        acquisition_date="2024-01-01",
+        direction="ascending",
+        relative_orbit=147,
+        polarization="VV+VH",
+        swath_mode="IW",
+        product_type="IW_SLC__1S",
+        processing_level="L1",
+        platform="Sentinel-1A",
+        asset_name="product",
+        href="https://download.example.invalid/reused.zip",
+    )
+    missing_scene = SlcScene(
+        scene_id="SCENE_MISSING",
+        product_name="SCENE_MISSING",
+        acquisition_start="2024-01-13T00:00:00Z",
+        acquisition_stop="2024-01-13T00:00:10Z",
+        acquisition_date="2024-01-13",
+        direction="ascending",
+        relative_orbit=147,
+        polarization="VV+VH",
+        swath_mode="IW",
+        product_type="IW_SLC__1S",
+        processing_level="L1",
+        platform="Sentinel-1A",
+        asset_name="product",
+        href="https://download.example.invalid/missing.zip",
+    )
+    manifest = StackManifest(
+        stack_id="asc_rel147_vv",
+        direction="ascending",
+        relative_orbit=147,
+        product_type="SLC",
+        scenes=[reused_scene, missing_scene],
+    )
+    source = source_context.slc_dir / manifest.stack_id / f"{reused_scene.product_name}.zip"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"completed-from-prior-attempt")
+
+    import casablanca_psi.acquisition as acquisition_module
+
+    auth_calls = {"count": 0}
+    stream_calls: list[str] = []
+
+    monkeypatch.setattr(acquisition_module, "ensure_download_auth", lambda *_args, **_kwargs: auth_calls.__setitem__("count", auth_calls["count"] + 1))
+
+    def fake_stream_download(href, target, *_args, **_kwargs):
+        stream_calls.append(href)
+        target.write_bytes(b"downloaded-now")
+
+    monkeypatch.setattr(acquisition_module, "_stream_download", fake_stream_download)
+
+    records = download_stack_scenes(config, context, manifest)
+
+    reused_target = context.slc_dir / manifest.stack_id / f"{reused_scene.product_name}.zip"
+    missing_target = context.slc_dir / manifest.stack_id / f"{missing_scene.product_name}.zip"
+    assert len(records) == 2
+    assert auth_calls["count"] == 1
+    assert stream_calls == ["https://download.example.invalid/missing.zip"]
+    assert reused_target.exists()
+    assert reused_target.read_bytes() == b"completed-from-prior-attempt"
+    assert reused_target.stat().st_ino == source.stat().st_ino
+    assert missing_target.exists()
+    assert missing_target.read_bytes() == b"downloaded-now"
+
+
 def test_download_stack_scenes_removes_stale_partial_before_s3_retry(tmp_path, monkeypatch) -> None:
     root = Path(__file__).resolve().parents[2]
     config = load_config(root / "configs" / "psi_casablanca_slc.yaml")

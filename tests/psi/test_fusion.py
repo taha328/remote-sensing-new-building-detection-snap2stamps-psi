@@ -11,9 +11,11 @@ def test_fuse_evidence_scores_and_clusters() -> None:
     points = gpd.GeoDataFrame(
         {
             "point_id": [1, 2],
-            "temporal_coherence": [0.9, 0.88],
-            "pre_stability_fraction": [0.0, 0.1],
-            "post_stability_fraction": [0.9, 0.8],
+            "tc_complete": [0.25, 0.30],
+            "tc_front": [0.28, 0.32],
+            "tc_back": [0.92, 0.88],
+            "ci_emergence": [0.67, 0.58],
+            "cdpsi_class": ["emergence_candidate", "emergence_candidate"],
         },
         geometry=[Point(0, 0), Point(5, 0)],
         crs="EPSG:32629",

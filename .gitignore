@@ -7,6 +7,7 @@
 # local environments and caches
 .venv/
 .conda-312/
+.tools/
 .pytest_cache/
 __pycache__/
 *.pyc
@@ -18,7 +19,6 @@ runs/
 runs_psi/
 target.dim
 target.data/
-.tools/
 
 # local presentation artifact
 *.pptx

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import csv
 import logging
 import math
 import os
@@ -11,12 +12,90 @@ import subprocess
 import time
 from typing import Callable, TextIO
 
-from casablanca_psi.artifact_lifecycle import CleanupRecord, delete_paths, is_valid_stamps_outputs
+from casablanca_psi.artifact_lifecycle import CleanupRecord, CleanupWarning, delete_paths, is_valid_stamps_outputs
 from casablanca_psi.config import OrbitStackConfig, PipelineConfig
 from casablanca_psi.manifests import StackManifest, stamps_stack_dir
 from casablanca_psi.run_context import RunContext
 
 LOGGER = logging.getLogger(__name__)
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_LOCAL_SNAPHU_BINARY = _PROJECT_ROOT / ".tools" / "snaphu" / "bin" / "snaphu"
+_LOCAL_TRIANGLE_BINARY = _PROJECT_ROOT / ".tools" / "triangle" / "bin" / "triangle"
+
+_MERGE_STAGE_ROOT_ARTIFACTS = (
+    "ps2.mat",
+    "ph2.mat",
+    "rc2.mat",
+    "pm2.mat",
+    "bp2.mat",
+    "la2.mat",
+    "inc2.mat",
+    "hgt2.mat",
+    "phuw2.mat",
+    "scla2.mat",
+    "scla_sb2.mat",
+    "scn2.mat",
+    "ifgstd2.mat",
+    "patch.list_old",
+)
+_MERGE_READY_PATCH_FILES = ("ps2.mat", "pm2.mat", "rc2.mat", "bp2.mat", "patch_noover.in", "no_ps_info.mat")
+_STEP6_READY_ROOT_FILES = (
+    "ps2.mat",
+    "ph2.mat",
+    "rc2.mat",
+    "pm2.mat",
+    "bp2.mat",
+    "la2.mat",
+    "inc2.mat",
+    "hgt2.mat",
+    "ifgstd2.mat",
+    "phuw2.mat",
+    "uw_grid.mat",
+    "uw_interp.mat",
+    "uw_space_time.mat",
+)
+_STEP7_READY_ROOT_FILES = (
+    *_STEP6_READY_ROOT_FILES,
+    "scla2.mat",
+    "scla_smooth2.mat",
+)
+_STEP8_READY_ROOT_FILES = (
+    *_STEP7_READY_ROOT_FILES,
+    "scn2.mat",
+)
+_LATE_STAGE_ROOT_ARTIFACTS = (
+    "scla2.mat",
+    "scla_sb2.mat",
+    "scla_smooth2.mat",
+    "scla_smooth_sb2.mat",
+    "scn2.mat",
+    "aps2.mat",
+    "aps_sb2.mat",
+    "tca2.mat",
+    "tca_sb2.mat",
+)
+_STEP8_ROOT_ARTIFACTS = (
+    "scn2.mat",
+    "aps2.mat",
+    "aps_sb2.mat",
+    "tca2.mat",
+    "tca_sb2.mat",
+    "scnfilt.1.node",
+    "scnfilt.2.edge",
+    "scnfilt.2.node",
+    "scnfilt.2.ele",
+    "scnfilt.2.poly",
+    "scnfilt.2.neigh",
+    "triangle_scn.log",
+)
+_RAW_EXPORT_FIELDS = (
+    "point_id",
+    "lon",
+    "lat",
+    "temporal_coherence",
+    "azimuth_index",
+    "range_index",
+)
 
 
 @dataclass(frozen=True)
@@ -27,6 +106,7 @@ class StampsOutputs:
     ps_points_csv: Path
     ps_timeseries_csv: Path
     cleanup_records: tuple[CleanupRecord, ...] = ()
+    cleanup_warnings: tuple[CleanupWarning, ...] = ()
 
 
 @dataclass
@@ -69,8 +149,37 @@ class StaMPSRunner:
         return self.config.stamps.export_script.resolve().parent.parent / "matlab_helpers"
 
     @property
+    def _export_script_path(self) -> Path:
+        if self.config.stamps.export_script is None:
+            raise ValueError("stamps.export_script must point to a MATLAB/Octave export script.")
+        return self.config.stamps.export_script.resolve()
+
+    @property
     def _mt_prep_snap(self) -> Path:
         return self._bin_dir / "mt_prep_snap"
+
+    @staticmethod
+    def _resolve_binary(command_name: str, local_binary: Path) -> Path | None:
+        candidates: list[Path] = []
+        if local_binary.exists() and os.access(local_binary, os.X_OK):
+            candidates.append(local_binary)
+        resolved = shutil.which(command_name)
+        if resolved is not None:
+            resolved_path = Path(resolved)
+            if resolved_path.exists() and os.access(resolved_path, os.X_OK):
+                candidates.append(resolved_path)
+        for candidate in candidates:
+            try:
+                return candidate.resolve()
+            except OSError:
+                continue
+        return None
+
+    def _resolve_snaphu_binary(self) -> Path | None:
+        return self._resolve_binary("snaphu", _LOCAL_SNAPHU_BINARY)
+
+    def _resolve_triangle_binary(self) -> Path | None:
+        return self._resolve_binary("triangle", _LOCAL_TRIANGLE_BINARY)
 
     def _interpreter_command(self) -> str:
         if self.config.stamps.use_octave:
@@ -94,11 +203,33 @@ class StaMPSRunner:
             raise ValueError("stamps.export_script must point to a MATLAB/Octave export script.")
         if not self.config.stamps.export_script.exists():
             raise FileNotFoundError(f"StaMPS export script not found: {self.config.stamps.export_script}")
+        snaphu_binary = self._resolve_snaphu_binary()
+        if snaphu_binary is None:
+            raise FileNotFoundError(
+                "SNAPHU binary not found. Install it on PATH or provision it at "
+                f"{_LOCAL_SNAPHU_BINARY}"
+            )
+        LOGGER.info("Using SNAPHU binary | path=%s", snaphu_binary)
+        triangle_binary = self._resolve_triangle_binary()
+        if triangle_binary is None:
+            raise FileNotFoundError(
+                "Triangle binary not found. Install it on PATH or provision it at "
+                f"{_LOCAL_TRIANGLE_BINARY}"
+            )
+        LOGGER.info("Using Triangle binary | path=%s", triangle_binary)
 
     def _environment(self) -> dict[str, str]:
         env = os.environ.copy()
         env["STAMPS"] = str(self.config.stamps.install_root)
         path_entries = [str(self._bin_dir)]
+        snaphu_binary = self._resolve_snaphu_binary()
+        if snaphu_binary is not None:
+            path_entries.append(str(snaphu_binary.parent))
+            env["SNAPHU_BIN"] = str(snaphu_binary)
+        triangle_binary = self._resolve_triangle_binary()
+        if triangle_binary is not None:
+            path_entries.append(str(triangle_binary.parent))
+            env["TRIANGLE_BIN"] = str(triangle_binary)
         interpreter_location = shutil.which(self._interpreter_command())
         if interpreter_location is not None:
             path_entries.append(str(Path(interpreter_location).resolve().parent))
@@ -160,6 +291,9 @@ class StaMPSRunner:
             "serial_patch_batch_execution": not parallel_patch_phase,
             "parallel_patch_steps_end": 5,
             "serial_steps_start": 5,
+            "merge_resample_size": self.config.stamps.merge_resample_size,
+            "snaphu_path": str(self._resolve_snaphu_binary() or ""),
+            "triangle_path": str(self._resolve_triangle_binary() or ""),
             "mode": "parallel_patch_batches_then_serial_merge" if parallel_patch_phase else "serial_patch_batches_then_serial_merge",
         }
         if stack is not None:
@@ -183,6 +317,25 @@ class StaMPSRunner:
         subprocess.run(command, cwd=cwd, env=self._environment(), check=True)
         self._validate_mt_prep_outputs(cwd)
 
+    def _configure_merge_stage_parameters(self, root: Path) -> None:
+        if self.config.stamps.merge_resample_size == 0:
+            LOGGER.info("Keeping StaMPS merge_resample_size at upstream default | root=%s", root)
+            return
+        parms_path = root / "parms.mat"
+        if not parms_path.exists():
+            raise FileNotFoundError(f"StaMPS parms.mat is required before configuring merge-stage parameters: {parms_path}")
+        LOGGER.info(
+            "Configuring StaMPS merge-stage parameters | root=%s merge_resample_size=%s",
+            root,
+            self.config.stamps.merge_resample_size,
+        )
+        script = (
+            f"{self._matlab_startup_script()}"
+            f"cd('{root.as_posix()}');"
+            f"setparm('merge_resample_size',{self.config.stamps.merge_resample_size},1);"
+        )
+        self._run_matlab_batch(script, cwd=root, log_name="matlab_setparm.log")
+
     def _matlab_batch_command(self, script: str, *, cwd: Path, log_path: Path) -> list[str]:
         command_name = self._interpreter_command()
         if self.config.stamps.use_octave:
@@ -194,11 +347,18 @@ class StaMPSRunner:
         startup = [f"addpath('{self._matlab_dir.as_posix()}');"]
         if helper_dir.exists():
             startup.append(
-                f"if (isempty(which('gausswin')) || isempty(which('interp'))) && exist('{helper_dir.as_posix()}','dir');"
+                f"if (isempty(which('gausswin')) || isempty(which('interp')) || isempty(which('nanmean'))) && exist('{helper_dir.as_posix()}','dir');"
                 f"addpath('{helper_dir.as_posix()}');"
                 "end;"
             )
         return "".join(startup)
+
+    def _export_script_invocation(self) -> str:
+        export_script_path = self._export_script_path
+        return (
+            f"addpath('{export_script_path.parent.as_posix()}');"
+            f"feval('{export_script_path.stem}');"
+        )
 
     def _run_matlab_batch(self, script: str, cwd: Path, *, log_name: str = "matlab_batch.log") -> None:
         log_path = cwd / log_name
@@ -240,6 +400,201 @@ class StaMPSRunner:
                 shutil.copy2(parms_path, patch_dir / "parms.mat")
             patch_list_paths.append(patch_list_path)
         return patch_list_paths
+
+    @staticmethod
+    def _patch_step5_completed(patch_dir: Path) -> bool:
+        log_path = patch_dir / "STAMPS.log"
+        if not log_path.exists():
+            return False
+        try:
+            log_text = log_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return False
+        return "PS_CORRECT_PHASE Finished" in log_text or "No PS left in step 4, so will skip step 5" in log_text
+
+    @staticmethod
+    def _root_log_contains(root: Path, marker: str) -> bool:
+        log_path = root / "STAMPS.log"
+        if not log_path.exists():
+            return False
+        try:
+            log_text = log_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return False
+        return marker in log_text
+
+    def _has_merge_ready_patch_workspace(self, root: Path) -> bool:
+        parms_path = root / "parms.mat"
+        if not parms_path.exists():
+            return False
+        patch_names = self._patch_names(root)
+        if not patch_names:
+            return False
+        for patch_name in patch_names:
+            patch_dir = root / patch_name
+            if not patch_dir.is_dir():
+                return False
+            for filename in _MERGE_READY_PATCH_FILES:
+                artifact = patch_dir / filename
+                if not artifact.exists() or artifact.stat().st_size == 0:
+                    return False
+            if not self._patch_step5_completed(patch_dir):
+                return False
+        return True
+
+    def _has_step6_ready_workspace(self, root: Path) -> bool:
+        if not (root / "parms.mat").exists():
+            return False
+        if not self._patch_names(root):
+            return False
+        for filename in _STEP6_READY_ROOT_FILES:
+            artifact = root / filename
+            if not artifact.exists() or artifact.stat().st_size == 0:
+                return False
+        return self._root_log_contains(root, "PS_UNWRAP        Finished")
+
+    def _has_step7_ready_workspace(self, root: Path) -> bool:
+        if not (root / "parms.mat").exists():
+            return False
+        if not self._patch_names(root):
+            return False
+        for filename in _STEP7_READY_ROOT_FILES:
+            artifact = root / filename
+            if not artifact.exists() or artifact.stat().st_size == 0:
+                return False
+        return self._root_log_contains(root, "PS_SMOOTH_SCLA   Finished")
+
+    def _has_step8_complete_workspace(self, root: Path) -> bool:
+        if not (root / "parms.mat").exists():
+            return False
+        if not self._patch_names(root):
+            return False
+        for filename in _STEP8_READY_ROOT_FILES:
+            artifact = root / filename
+            if not artifact.exists() or artifact.stat().st_size == 0:
+                return False
+        return self._root_log_contains(root, "PS_SCN_FILT      Finished")
+
+    def _cleanup_partial_merge_stage_for_rerun(self, root: Path, *, export_dir: Path) -> list[CleanupRecord]:
+        targets = [path for name in _MERGE_STAGE_ROOT_ARTIFACTS if (path := root / name).exists()]
+        if export_dir.exists():
+            targets.append(export_dir)
+        if not targets:
+            return []
+        return delete_paths(
+            targets,
+            category="stamps_merge_stage",
+            checkpoint="stamps_merge_rerun_preflight",
+            reason="Failed merged-stage StaMPS artifacts must be cleared before rerunning the global merge on the same attempt.",
+            logger=LOGGER,
+        )
+
+    def _cleanup_partial_late_stage_for_rerun(self, root: Path, *, export_dir: Path) -> list[CleanupRecord]:
+        targets = [path for name in _LATE_STAGE_ROOT_ARTIFACTS if (path := root / name).exists()]
+        if export_dir.exists():
+            targets.append(export_dir)
+        if not targets:
+            return []
+        return delete_paths(
+            targets,
+            category="stamps_late_stage",
+            checkpoint="stamps_late_stage_rerun_preflight",
+            reason="Failed late-stage StaMPS artifacts must be cleared before rerunning Steps 7-8 on the same attempt.",
+            logger=LOGGER,
+        )
+
+    def _cleanup_partial_step8_for_rerun(self, root: Path, *, export_dir: Path) -> list[CleanupRecord]:
+        targets = [path for name in _STEP8_ROOT_ARTIFACTS if (path := root / name).exists()]
+        if export_dir.exists():
+            targets.append(export_dir)
+        if not targets:
+            return []
+        return delete_paths(
+            targets,
+            category="stamps_step8_stage",
+            checkpoint="stamps_step8_rerun_preflight",
+            reason="Failed Step 8 StaMPS artifacts must be cleared before rerunning Step 8 on the same attempt.",
+            logger=LOGGER,
+        )
+
+    def _cleanup_partial_export_for_rerun(self, root: Path, *, export_dir: Path) -> list[CleanupRecord]:
+        targets = [export_dir] if export_dir.exists() else []
+        if not targets:
+            return []
+        return delete_paths(
+            targets,
+            category="stamps_export_tail",
+            checkpoint="stamps_export_rerun_preflight",
+            reason="Failed export-script outputs must be cleared before rerunning the export tail on the same attempt.",
+            logger=LOGGER,
+        )
+
+    @staticmethod
+    def _csv_header(path: Path) -> tuple[str, ...]:
+        if not path.exists() or path.stat().st_size == 0:
+            return ()
+        with path.open("r", encoding="utf-8", newline="") as stream:
+            reader = csv.reader(stream)
+            header = next(reader, ())
+        return tuple(header)
+
+    @staticmethod
+    def _csv_has_data_rows(path: Path) -> bool:
+        if not path.exists() or path.stat().st_size == 0:
+            return False
+        with path.open("r", encoding="utf-8", newline="") as stream:
+            reader = csv.reader(stream)
+            next(reader, None)
+            return next(reader, None) is not None
+
+    def _supports_raw_export_contract(self, points_csv: Path) -> bool:
+        header = self._csv_header(points_csv)
+        if not header:
+            return False
+        return set(_RAW_EXPORT_FIELDS).issubset(header)
+
+    def _maybe_cleanup_snap_export_after_stamps(
+        self,
+        *,
+        manifest: StackManifest,
+        snap_export_dir: Path,
+        points_csv: Path,
+        timeseries_csv: Path,
+        cleanup_records: list[CleanupRecord],
+        cleanup_warnings: list[CleanupWarning],
+        cleanup_observer: Callable[[tuple[CleanupRecord, ...]], None] | None,
+    ) -> None:
+        if not (self.config.artifact_lifecycle.enabled and self.config.artifact_lifecycle.purge_snap_export_after_stamps):
+            return
+        if self.config.psi.method == "cdpsi":
+            LOGGER.warning(
+                "Keeping SNAP StaMPS export because CDPSI may require subset-specific reruns from the same attempt lineage | stack_id=%s snap_export_dir=%s",
+                manifest.stack_id,
+                snap_export_dir,
+            )
+            return
+        if not self._supports_raw_export_contract(points_csv):
+            LOGGER.warning(
+                "Keeping SNAP StaMPS export because the raw PSI export contract is incomplete | stack_id=%s snap_export_dir=%s points_csv=%s",
+                manifest.stack_id,
+                snap_export_dir,
+                points_csv,
+            )
+            return
+        self._extend_cleanup_records(
+            cleanup_records,
+            delete_paths(
+                [snap_export_dir],
+                category="snap_export",
+                checkpoint="stamps_outputs_validated",
+                reason="SNAP StaMPS export is no longer needed once reusable StaMPS CSV outputs exist.",
+                logger=LOGGER,
+                best_effort=True,
+                retry_hidden_files=True,
+                warning_records=cleanup_warnings,
+            ),
+            cleanup_observer,
+        )
 
     def _spawn_patch_worker(
         self,
@@ -409,11 +764,21 @@ class StaMPSRunner:
             logger=LOGGER,
         )
 
-    def _has_reusable_outputs(self, root: Path) -> bool:
+    def _has_structurally_reusable_outputs(self, root: Path) -> bool:
         export_dir = root / "export"
         points_csv = export_dir / "ps_points.csv"
         ts_csv = export_dir / "ps_timeseries.csv"
         return is_valid_stamps_outputs(points_csv, ts_csv)
+
+    def _has_reusable_outputs(self, root: Path) -> bool:
+        export_dir = root / "export"
+        points_csv = export_dir / "ps_points.csv"
+        return self._has_structurally_reusable_outputs(root) and self._supports_raw_export_contract(points_csv)
+
+    def has_reusable_outputs(self, context: RunContext, stack_id: str) -> bool:
+        if not self.config.cache.reuse_stamps_outputs:
+            return False
+        return self._has_reusable_outputs(stamps_stack_dir(context, stack_id))
 
     def run_stack(
         self,
@@ -431,21 +796,19 @@ class StaMPSRunner:
         points_csv = export_dir / "ps_points.csv"
         ts_csv = export_dir / "ps_timeseries.csv"
         cleanup_records: list[CleanupRecord] = []
+        cleanup_warnings: list[CleanupWarning] = []
 
         if self.config.cache.reuse_stamps_outputs and self._has_reusable_outputs(root):
             LOGGER.info("Reusing StaMPS outputs | stack_id=%s root=%s", manifest.stack_id, root)
-            if self.config.artifact_lifecycle.enabled and self.config.artifact_lifecycle.purge_snap_export_after_stamps:
-                self._extend_cleanup_records(
-                    cleanup_records,
-                    delete_paths(
-                        [snap_export_dir],
-                        category="snap_export",
-                        checkpoint="stamps_outputs_validated",
-                        reason="SNAP StaMPS export is no longer needed once reusable StaMPS CSV outputs exist.",
-                        logger=LOGGER,
-                    ),
-                    cleanup_observer,
-                )
+            self._maybe_cleanup_snap_export_after_stamps(
+                manifest=manifest,
+                snap_export_dir=snap_export_dir,
+                points_csv=points_csv,
+                timeseries_csv=ts_csv,
+                cleanup_records=cleanup_records,
+                cleanup_warnings=cleanup_warnings,
+                cleanup_observer=cleanup_observer,
+            )
             return StampsOutputs(
                 stack_id=manifest.stack_id,
                 root=root,
@@ -453,39 +816,109 @@ class StaMPSRunner:
                 ps_points_csv=points_csv,
                 ps_timeseries_csv=ts_csv,
                 cleanup_records=tuple(cleanup_records),
+                cleanup_warnings=tuple(cleanup_warnings),
             )
 
-        self._extend_cleanup_records(
-            cleanup_records,
-            self._cleanup_partial_workspace_for_rerun(root, export_dir=export_dir),
-            cleanup_observer,
-        )
-        export_dir.mkdir(parents=True, exist_ok=True)
-
-        self._run_mt_prep_snap(stack.master_date.isoformat(), snap_export_dir, cwd=root)
-
-        patch_names = self._patch_names(root)
-        execution_plan = self.describe_execution_plan(stack, patch_names=patch_names)
-        LOGGER.info("Running StaMPS execution plan | stack_id=%s plan=%s", manifest.stack_id, execution_plan)
-        patch_list_paths = self._write_patch_worker_lists(
-            root,
-            patch_names,
-            int(execution_plan["patch_batch_count"]),
-        )
-        if execution_plan["parallel_patch_phase_enabled"]:
-            self._run_parallel_patch_batches(
+        start_step = 5
+        export_only = False
+        if self._has_step8_complete_workspace(root):
+            self._extend_cleanup_records(
+                cleanup_records,
+                self._cleanup_partial_export_for_rerun(root, export_dir=export_dir),
+                cleanup_observer,
+            )
+            patch_names = self._patch_names(root)
+            execution_plan = self.describe_execution_plan(stack, patch_names=patch_names)
+            export_only = True
+            LOGGER.info(
+                "Reusing Step 8-complete StaMPS workspace for export-only rerun | stack_id=%s root=%s plan=%s",
+                manifest.stack_id,
                 root,
-                patch_list_paths,
-                max_parallel_workers=int(execution_plan["effective_parallel_patch_workers"]),
+                execution_plan,
+            )
+        elif self._has_step7_ready_workspace(root):
+            self._extend_cleanup_records(
+                cleanup_records,
+                self._cleanup_partial_step8_for_rerun(root, export_dir=export_dir),
+                cleanup_observer,
+            )
+            patch_names = self._patch_names(root)
+            execution_plan = self.describe_execution_plan(stack, patch_names=patch_names)
+            start_step = 8
+            LOGGER.info(
+                "Reusing Step 7-complete StaMPS workspace for Step 8 rerun | stack_id=%s root=%s plan=%s",
+                manifest.stack_id,
+                root,
+                execution_plan,
+            )
+        elif self._has_step6_ready_workspace(root):
+            self._extend_cleanup_records(
+                cleanup_records,
+                self._cleanup_partial_late_stage_for_rerun(root, export_dir=export_dir),
+                cleanup_observer,
+            )
+            patch_names = self._patch_names(root)
+            execution_plan = self.describe_execution_plan(stack, patch_names=patch_names)
+            start_step = 7
+            LOGGER.info(
+                "Reusing Step 6-complete StaMPS workspace for late-stage rerun | stack_id=%s root=%s plan=%s",
+                manifest.stack_id,
+                root,
+                execution_plan,
+            )
+        elif self._has_merge_ready_patch_workspace(root):
+            self._extend_cleanup_records(
+                cleanup_records,
+                self._cleanup_partial_merge_stage_for_rerun(root, export_dir=export_dir),
+                cleanup_observer,
+            )
+            self._configure_merge_stage_parameters(root)
+            patch_names = self._patch_names(root)
+            execution_plan = self.describe_execution_plan(stack, patch_names=patch_names)
+            LOGGER.info(
+                "Reusing completed StaMPS patch workspace for merged-stage rerun | stack_id=%s root=%s plan=%s",
+                manifest.stack_id,
+                root,
+                execution_plan,
             )
         else:
-            self._run_serial_patch_batches(root, patch_list_paths)
-        script = (
-            f"{self._matlab_startup_script()}"
-            f"cd('{root.as_posix()}');"
-            "stamps(5,8,[],0,[],2);"
-            f"run('{self.config.stamps.export_script.resolve().as_posix()}');"
-        )
+            self._extend_cleanup_records(
+                cleanup_records,
+                self._cleanup_partial_workspace_for_rerun(root, export_dir=export_dir),
+                cleanup_observer,
+            )
+            self._run_mt_prep_snap(stack.master_date.isoformat(), snap_export_dir, cwd=root)
+            self._configure_merge_stage_parameters(root)
+            patch_names = self._patch_names(root)
+            execution_plan = self.describe_execution_plan(stack, patch_names=patch_names)
+            LOGGER.info("Running StaMPS execution plan | stack_id=%s plan=%s", manifest.stack_id, execution_plan)
+            patch_list_paths = self._write_patch_worker_lists(
+                root,
+                patch_names,
+                int(execution_plan["patch_batch_count"]),
+            )
+            if execution_plan["parallel_patch_phase_enabled"]:
+                self._run_parallel_patch_batches(
+                    root,
+                    patch_list_paths,
+                    max_parallel_workers=int(execution_plan["effective_parallel_patch_workers"]),
+                )
+            else:
+                self._run_serial_patch_batches(root, patch_list_paths)
+        export_dir.mkdir(parents=True, exist_ok=True)
+        if export_only:
+            script = (
+                f"{self._matlab_startup_script()}"
+                f"cd('{root.as_posix()}');"
+                f"{self._export_script_invocation()}"
+            )
+        else:
+            script = (
+                f"{self._matlab_startup_script()}"
+                f"cd('{root.as_posix()}');"
+                f"stamps({start_step},8,[],0,[],2);"
+                f"{self._export_script_invocation()}"
+            )
         self._run_matlab_batch(script, cwd=root)
 
         if not points_csv.exists():
@@ -493,20 +926,17 @@ class StaMPSRunner:
         if not ts_csv.exists():
             LOGGER.warning("StaMPS export did not produce ps_timeseries.csv; writing an empty placeholder")
             ts_csv.write_text("point_id,epoch,metric_name,value\n", encoding="utf-8")
-        if not self._has_reusable_outputs(root):
+        if not self._has_structurally_reusable_outputs(root):
             raise RuntimeError(f"StaMPS outputs are not structurally reusable under {root}")
-        if self.config.artifact_lifecycle.enabled and self.config.artifact_lifecycle.purge_snap_export_after_stamps:
-            self._extend_cleanup_records(
-                cleanup_records,
-                delete_paths(
-                    [snap_export_dir],
-                    category="snap_export",
-                    checkpoint="stamps_outputs_validated",
-                    reason="SNAP StaMPS export is no longer needed once reusable StaMPS CSV outputs exist.",
-                    logger=LOGGER,
-                ),
-                cleanup_observer,
-            )
+        self._maybe_cleanup_snap_export_after_stamps(
+            manifest=manifest,
+            snap_export_dir=snap_export_dir,
+            points_csv=points_csv,
+            timeseries_csv=ts_csv,
+            cleanup_records=cleanup_records,
+            cleanup_warnings=cleanup_warnings,
+            cleanup_observer=cleanup_observer,
+        )
 
         return StampsOutputs(
             stack_id=manifest.stack_id,
@@ -515,4 +945,5 @@ class StaMPSRunner:
             ps_points_csv=points_csv,
             ps_timeseries_csv=ts_csv,
             cleanup_records=tuple(cleanup_records),
+            cleanup_warnings=tuple(cleanup_warnings),
         )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
+import errno
 import json
 from pathlib import Path
 import logging
@@ -1545,6 +1546,51 @@ def _download_transport_for_scene(config: PipelineConfig, scene: SlcScene) -> st
     return "odata"
 
 
+def _candidate_reused_zip_paths(context: RunContext, stack_id: str, scene: SlcScene) -> list[Path]:
+    target = slc_scene_zip_path(context, stack_id, scene).resolve()
+    output_root = context.root.parent.parent
+    candidates: list[Path] = []
+    for candidate in output_root.glob(f"**/raw/slc/{stack_id}/{scene.product_name}.zip"):
+        resolved = candidate.resolve()
+        if resolved == target:
+            continue
+        try:
+            if not resolved.is_file() or resolved.stat().st_size <= 0:
+                continue
+        except OSError:
+            continue
+        candidates.append(resolved)
+    candidates.sort(key=lambda path: (path.stat().st_mtime, str(path)), reverse=True)
+    return candidates
+
+
+def _materialize_reused_zip(source: Path, target: Path) -> str:
+    try:
+        os.link(source, target)
+        return "hardlink"
+    except OSError as exc:
+        if exc.errno not in {errno.EXDEV, errno.EPERM, errno.EACCES, errno.EMLINK, errno.ENOTSUP}:
+            raise
+    try:
+        target.symlink_to(source)
+        return "symlink"
+    except OSError:
+        shutil.copy2(source, target)
+        return "copy"
+
+
+def _reuse_existing_scene_download(
+    context: RunContext,
+    stack_id: str,
+    scene: SlcScene,
+) -> tuple[Path, str] | None:
+    target = slc_scene_zip_path(context, stack_id, scene)
+    for candidate in _candidate_reused_zip_paths(context, stack_id, scene):
+        mode = _materialize_reused_zip(candidate, target)
+        return candidate, mode
+    return None
+
+
 def download_stack_scenes(config: PipelineConfig, context: RunContext, manifest: StackManifest) -> list[DownloadRecord]:
     records: list[DownloadRecord] = []
     pending_scene_ids: list[str] = []
@@ -1555,6 +1601,19 @@ def download_stack_scenes(config: PipelineConfig, context: RunContext, manifest:
         if target.exists() and target.stat().st_size > 0 and config.cache.reuse_downloads:
             LOGGER.info("Reusing SLC download %s", target)
             continue
+        if config.cache.reuse_downloads:
+            reused = _reuse_existing_scene_download(context, manifest.stack_id, scene)
+            if reused is not None:
+                source, mode = reused
+                LOGGER.info(
+                    "Reused SLC download from prior run | stack_id=%s scene_id=%s source=%s target=%s mode=%s",
+                    manifest.stack_id,
+                    scene.scene_id,
+                    source,
+                    target,
+                    mode,
+                )
+                continue
         pending_scene_ids.append(scene.scene_id)
 
     if pending_scene_ids:

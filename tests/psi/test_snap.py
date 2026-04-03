@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from datetime import date as calendar_date
+import io
 from pathlib import Path
 from xml.sax.saxutils import escape
 from xml.etree import ElementTree as ET
+import zipfile
 
 import pytest
 
+from casablanca_psi import acquisition as acquisition_module
 from casablanca_psi.artifact_lifecycle import CleanupWarning
-from casablanca_psi.config import load_config
+from casablanca_psi.config import OrbitStackConfig, load_config
 from casablanca_psi.manifests import SlcScene, StackManifest, slc_scene_zip_path
 from casablanca_psi.run_context import RunContext
 from casablanca_psi.snap import (
@@ -21,6 +24,7 @@ from casablanca_psi.snap import (
 
 def _build_manifest() -> StackManifest:
     scenes = []
+    fixture_local_path = str(Path(__file__).resolve())
     for index, acquisition_date in enumerate(["2023-08-29", "2023-09-10", "2023-09-22", "2023-10-04", "2023-10-16"], start=1):
         scenes.append(
             SlcScene(
@@ -38,6 +42,7 @@ def _build_manifest() -> StackManifest:
                 platform="Sentinel-1A",
                 asset_name="product",
                 href="https://download.example.invalid/scene.zip",
+                local_path=fixture_local_path,
             )
         )
     return StackManifest(
@@ -405,6 +410,7 @@ def test_run_graph_passes_configured_parallelism_and_tile_cache_flags(monkeypatc
     assert "-J-Xms2G" in command
     assert "-J-Xmx8G" in command
     assert any(entry.startswith("-J-Dsnap.userdir=") for entry in command)
+    assert any(entry.startswith("-J-DAuxDataPath=") for entry in command)
     assert "-J-Dsnap.jai.defaultTileSize=512" in command
     assert "-J-Dsnap.parallelism=1" in command
     cache_index = command.index("-c")
@@ -432,7 +438,149 @@ def test_describe_runtime_policy_audits_installed_vmoptions() -> None:
     } in policy["vmoptions_overrides"]
     assert policy["snap_user_dir"].endswith("data/cache/snap-gpt-userdir")
     assert policy["auxdata_root"].endswith("data/cache/snap-gpt-userdir/auxdata")
+    assert policy["orbit_auxdata_root"].endswith("data/cache/snap-gpt-userdir/auxdata/Orbits/Sentinel-1")
+    assert policy["egm96_auxdata_path"].endswith("data/cache/snap-gpt-userdir/auxdata/dem/egm96/ww15mgh_b.zip")
     assert policy["default_tile_size_px"] == 512
+
+
+def test_validate_environment_seeds_egm96_into_snap_userdir(tmp_path, monkeypatch) -> None:
+    config = load_config(Path("configs/psi_casablanca_slc_minimal.yaml"))
+    config.snap.user_dir = tmp_path / "snap-userdir"
+    config.dem.path = tmp_path / "dem.tif"
+    config.dem.path.write_text("dem", encoding="utf-8")
+    runner = SnapGraphRunner(config)
+
+    source = tmp_path / "legacy-egm96" / "ww15mgh_b.zip"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(source, mode="w") as archive:
+        archive.writestr("ww15mgh_b.grd", "egm96")
+
+    monkeypatch.setattr("shutil.which", lambda _command: config.snap.gpt_path)
+
+    class Result:
+        stdout = "Graph Processing Tool"
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        assert command == [config.snap.gpt_path, "-h"]
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(runner, "_egm96_candidate_paths", lambda: (runner._egm96_target_path(), source))
+
+    runner.validate_environment()
+
+    target = runner._egm96_target_path()
+    assert target is not None
+    assert target.exists()
+    assert target.read_bytes() == source.read_bytes()
+    assert runner.describe_runtime_policy()["egm96_auxdata_exists"] is True
+
+
+def test_ensure_orbit_auxdata_for_scene_seeds_precise_orbit_into_snap_userdir(tmp_path, monkeypatch) -> None:
+    config = load_config(Path("configs/psi_casablanca_slc_minimal.yaml"))
+    config.snap.user_dir = tmp_path / "snap-userdir"
+    runner = SnapGraphRunner(config)
+    scene = _build_manifest().scenes[1]
+
+    source_root = tmp_path / "legacy-orbits"
+    source = (
+        source_root
+        / "POEORB"
+        / "S1A"
+        / "2023"
+        / "09"
+        / "S1A_OPER_AUX_POEORB_OPOD_20230930T080647_V20230909T225942_20230911T005942.EOF.zip"
+    )
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("orbit", encoding="utf-8")
+
+    target_root = runner._resolved_orbit_auxdata_root()
+    assert target_root is not None
+    monkeypatch.setattr(runner, "_orbit_candidate_roots", lambda: (target_root, source_root))
+
+    orbit_path = runner._ensure_orbit_auxdata_for_scene(scene)
+
+    assert orbit_path == (
+        target_root
+        / "POEORB"
+        / "S1A"
+        / "2023"
+        / "09"
+        / "S1A_OPER_AUX_POEORB_OPOD_20230930T080647_V20230909T225942_20230911T005942.EOF.zip"
+    )
+    assert orbit_path.read_text(encoding="utf-8") == "orbit"
+
+
+def test_ensure_orbit_auxdata_for_scene_downloads_precise_orbit_from_official_s3_when_local_cache_missing(
+    tmp_path, monkeypatch
+) -> None:
+    config = load_config(Path("configs/psi_casablanca_slc_minimal.yaml"))
+    config.snap.user_dir = tmp_path / "snap-userdir"
+    runner = SnapGraphRunner(config)
+    scene = SlcScene(
+        scene_id="SCENE_20230817",
+        product_name="SCENE_20230817",
+        acquisition_start="2023-08-17T18:26:07.977622Z",
+        acquisition_stop="2023-08-17T18:26:35.000000Z",
+        acquisition_date="2023-08-17",
+        direction="ascending",
+        relative_orbit=147,
+        polarization="VV+VH",
+        swath_mode="IW",
+        product_type="IW_SLC__1S",
+        processing_level="L1",
+        platform="Sentinel-1A",
+        asset_name="product",
+        href="https://download.example.invalid/scene.zip",
+    )
+
+    class FakePaginator:
+        def paginate(self, **_kwargs):
+            return [
+                {
+                    "Contents": [
+                        {
+                            "Key": "Sentinel-1/AUX/AUX_POEORB/2023/08/17/"
+                            "S1A_OPER_AUX_POEORB_OPOD_20230907T080654_V20230817T225942_20230819T005942.EOF"
+                        },
+                        {
+                            "Key": "Sentinel-1/AUX/AUX_POEORB/2023/08/16/"
+                            "S1A_OPER_AUX_POEORB_OPOD_20230906T080631_V20230816T225942_20230818T005942.EOF"
+                        },
+                    ]
+                }
+            ]
+
+    class FakeS3Client:
+        def get_paginator(self, operation_name):
+            assert operation_name == "list_objects_v2"
+            return FakePaginator()
+
+        def get_object(self, **kwargs):
+            assert kwargs["Key"].endswith(
+                "S1A_OPER_AUX_POEORB_OPOD_20230906T080631_V20230816T225942_20230818T005942.EOF"
+            )
+            return {"Body": io.BytesIO(b"official-orbit")}
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(acquisition_module, "_s3_client", lambda *_args, **_kwargs: FakeS3Client())
+
+    orbit_path = runner._ensure_orbit_auxdata_for_scene(scene)
+
+    target_root = runner._resolved_orbit_auxdata_root()
+    assert target_root is not None
+    assert orbit_path == (
+        target_root
+        / "POEORB"
+        / "S1A"
+        / "2023"
+        / "08"
+        / "S1A_OPER_AUX_POEORB_OPOD_20230906T080631_V20230816T225942_20230818T005942.EOF"
+    )
+    assert orbit_path.read_bytes() == b"official-orbit"
 
 
 def test_is_no_intersection_output_matches_snap_messages() -> None:
@@ -1132,6 +1280,387 @@ def test_run_stack_builds_two_product_stamps_export_inputs(tmp_path, monkeypatch
         "q_ifg_VV_22Sep2023_16Oct2023",
     ]
     assert not (outputs.stack_dir / "stamps_export_inputs" / "stack_products").exists()
+
+
+def test_run_stack_supports_three_scene_cdpsi_subset(tmp_path, monkeypatch) -> None:
+    root = Path(__file__).resolve().parents[2]
+    config = load_config(root / "configs" / "psi_casablanca_slc_cdpsi_min6.yaml")
+    config.artifact_lifecycle.purge_prepared_after_coreg = False
+    config.artifact_lifecycle.purge_snap_intermediates_after_export = False
+    runner = SnapGraphRunner(config)
+    monkeypatch.setattr(runner, "validate_environment", lambda: None)
+    monkeypatch.setattr(runner, "_has_reusable_export", _has_fake_export)
+    monkeypatch.setattr(runner, "_ensure_orbit_auxdata_for_scene", lambda _scene: Path("/tmp/orbit.EOF"))
+    context = RunContext.create(config, tmp_path)
+    context.ensure_directories()
+
+    scenes = [
+        SlcScene(
+            scene_id="SCENE_20230817",
+            product_name="SCENE_20230817",
+            acquisition_start="2023-08-17T00:00:00Z",
+            acquisition_stop="2023-08-17T00:00:10Z",
+            acquisition_date="2023-08-17",
+            direction="ascending",
+            relative_orbit=147,
+            polarization="VV",
+            swath_mode="IW",
+            product_type="IW_SLC__1S",
+            processing_level="L1",
+            platform="Sentinel-1A",
+            asset_name="product",
+            href="https://download.example.invalid/scene-20230817.zip",
+        ),
+        SlcScene(
+            scene_id="SCENE_20230829",
+            product_name="SCENE_20230829",
+            acquisition_start="2023-08-29T00:00:00Z",
+            acquisition_stop="2023-08-29T00:00:10Z",
+            acquisition_date="2023-08-29",
+            direction="ascending",
+            relative_orbit=147,
+            polarization="VV",
+            swath_mode="IW",
+            product_type="IW_SLC__1S",
+            processing_level="L1",
+            platform="Sentinel-1A",
+            asset_name="product",
+            href="https://download.example.invalid/scene-20230829.zip",
+        ),
+        SlcScene(
+            scene_id="SCENE_20230910",
+            product_name="SCENE_20230910",
+            acquisition_start="2023-09-10T00:00:00Z",
+            acquisition_stop="2023-09-10T00:00:10Z",
+            acquisition_date="2023-09-10",
+            direction="ascending",
+            relative_orbit=147,
+            polarization="VV",
+            swath_mode="IW",
+            product_type="IW_SLC__1S",
+            processing_level="L1",
+            platform="Sentinel-1A",
+            asset_name="product",
+            href="https://download.example.invalid/scene-20230910.zip",
+        ),
+    ]
+    manifest = StackManifest(
+        stack_id="asc_rel147_vv_cdpsi_front_20230817_20230910",
+        direction="ascending",
+        relative_orbit=147,
+        product_type="SLC",
+        scenes=scenes,
+    )
+    stack = OrbitStackConfig(
+        id=manifest.stack_id,
+        direction="ascending",
+        relative_orbit=147,
+        iw_swaths=("IW1", "IW2", "IW3"),
+        polarization="VV",
+        master_date=calendar_date.fromisoformat("2023-08-29"),
+        min_scenes=3,
+        scene_limit=3,
+    )
+    full_stack_raw_dir = context.slc_dir / "asc_rel147_vv"
+    full_stack_raw_dir.mkdir(parents=True, exist_ok=True)
+    for scene in scenes:
+        (full_stack_raw_dir / f"{scene.product_name}.zip").write_text("raw", encoding="utf-8")
+
+    master_scene = scenes[1]
+    secondaries = [scenes[0], scenes[2]]
+    master_token = _scene_date_token(master_scene.acquisition_date)
+
+    def fake_subset_coreg_bands(secondary_date: str) -> list[str]:
+        suffix = _scene_date_token(secondary_date)
+        return [
+            f"i_VV_mst_{master_token}",
+            f"q_VV_mst_{master_token}",
+            f"i_VV_slv1_{suffix}",
+            f"q_VV_slv1_{suffix}",
+        ]
+
+    def fake_subset_ifg_bands(secondary_date: str) -> list[str]:
+        suffix = _scene_date_token(secondary_date)
+        return [
+            f"i_ifg_VV_{master_token}_{suffix}",
+            f"q_ifg_VV_{master_token}_{suffix}",
+            "elevation",
+            "orthorectifiedLat",
+            "orthorectifiedLon",
+        ]
+
+    def fake_subset_final_coreg_bands() -> list[str]:
+        bands = [f"i_VV_mst_{master_token}", f"q_VV_mst_{master_token}"]
+        for secondary in secondaries:
+            suffix = _scene_date_token(secondary.acquisition_date)
+            bands.extend((f"i_VV_slv1_{suffix}", f"q_VV_slv1_{suffix}"))
+        return bands
+
+    def fake_subset_final_ifg_bands() -> list[str]:
+        bands = []
+        for index, secondary in enumerate(secondaries):
+            suffix = _scene_date_token(secondary.acquisition_date)
+            bands.extend((f"i_ifg_VV_{master_token}_{suffix}", f"q_ifg_VV_{master_token}_{suffix}"))
+            if index == 0:
+                bands.extend(("elevation", "orthorectifiedLat", "orthorectifiedLon"))
+        return bands
+
+    graph_calls: list[tuple[str, dict[str, str]]] = []
+
+    def fake_run_graph(job):
+        graph_calls.append((job.graph_path.name, dict(job.parameters)))
+        graph_name = job.graph_path.name
+        if graph_name == "merge_product_set.xml":
+            output = Path(job.parameters["outputFile"])
+            secondary_date = output.stem.split("_")[1]
+            _write_fake_dimap(output, band_names=fake_subset_coreg_bands(secondary_date))
+        elif graph_name == "select_export_bands.xml":
+            output = Path(job.parameters["outputFile"])
+            _write_fake_dimap(output, band_names=job.parameters["sourceBands"].split(","))
+        elif graph_name == "derive_ifg_from_coreg_stack.xml":
+            output = Path(job.parameters["outputFile"])
+            secondary_date = output.stem.split("_")[1]
+            _write_fake_dimap(output, band_names=fake_subset_ifg_bands(secondary_date))
+        elif graph_name == "create_stack_product.xml":
+            output = Path(job.parameters["outputFile"])
+            _write_fake_dimap(output, band_names=fake_subset_final_coreg_bands())
+        elif graph_name == "band_merge_product_set.xml":
+            output = Path(job.parameters["outputFile"])
+            _write_fake_dimap(output, band_names=fake_subset_final_ifg_bands())
+        else:
+            if graph_name == "prepare_slc_stack.xml":
+                input_file = Path(job.parameters["inputFile"])
+                assert input_file.exists()
+                assert input_file.parent == full_stack_raw_dir
+            for key in ("outputFile", "coregOutputFile", "ifgOutputFile"):
+                if key in job.parameters:
+                    _write_fake_dimap(Path(job.parameters[key]))
+        if "outputDir" in job.parameters:
+            output_dir = Path(job.parameters["outputDir"])
+            output_dir.mkdir(parents=True, exist_ok=True)
+            for name in ("rslc", "diff0", "geo"):
+                subdir = output_dir / name
+                subdir.mkdir(exist_ok=True)
+                (subdir / "ok.txt").write_text("ok")
+
+    monkeypatch.setattr(runner, "_run_graph", fake_run_graph)
+
+    outputs = runner.run_stack(context, manifest, stack, "POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))")
+
+    create_stack_calls = [params for graph_name, params in graph_calls if graph_name == "create_stack_product.xml"]
+    band_merge_calls = [params for graph_name, params in graph_calls if graph_name == "band_merge_product_set.xml"]
+    export_calls = [params for graph_name, params in graph_calls if graph_name == "stamps_export.xml"]
+
+    assert len(create_stack_calls) == 1
+    assert len(band_merge_calls) == 1
+    assert len(export_calls) == 1
+    assert len(create_stack_calls[0]["fileList"].split(",")) == 2
+    assert len(band_merge_calls[0]["fileList"].split(",")) == 2
+
+    final_coreg_product = outputs.stack_dir / "stamps_export_inputs" / "final_products" / "2023-08-29_coreg_final.dim"
+    final_ifg_product = outputs.stack_dir / "stamps_export_inputs" / "final_products" / "2023-08-29_ifg_final.dim"
+    assert runner._product_band_names(final_coreg_product) == fake_subset_final_coreg_bands()
+    assert runner._product_band_names(final_ifg_product) == fake_subset_final_ifg_bands()
+    assert outputs.stamps_export_dir.exists()
+
+
+def test_run_stack_purges_superseded_export_checkpoints_before_final_ifg_merge(tmp_path, monkeypatch) -> None:
+    root = Path(__file__).resolve().parents[2]
+    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config.artifact_lifecycle.purge_prepared_after_coreg = False
+    config.artifact_lifecycle.purge_snap_intermediates_after_export = False
+    runner = SnapGraphRunner(config)
+    monkeypatch.setattr(runner, "validate_environment", lambda: None)
+    monkeypatch.setattr(runner, "_has_reusable_export", _has_fake_export)
+    context = RunContext.create(config, tmp_path)
+    context.ensure_directories()
+    manifest = _build_manifest()
+    stack = config.stacks[0]
+    master = manifest.scenes[2]
+    secondaries = [manifest.scenes[0], manifest.scenes[1], manifest.scenes[3], manifest.scenes[4]]
+
+    observed_final_ifg_inputs: dict[str, bool] = {}
+
+    def fake_run_graph(job):
+        graph_name = job.graph_path.name
+        if graph_name == "merge_product_set.xml":
+            output = Path(job.parameters["outputFile"])
+            secondary_date = output.stem.split("_")[1]
+            _write_fake_dimap(output, band_names=_fake_dual_pol_coreg_bands(secondary_date))
+        elif graph_name == "select_export_bands.xml":
+            output = Path(job.parameters["outputFile"])
+            _write_fake_dimap(output, band_names=job.parameters["sourceBands"].split(","))
+        elif graph_name == "derive_ifg_from_coreg_stack.xml":
+            output = Path(job.parameters["outputFile"])
+            secondary_date = output.stem.split("_")[1]
+            _write_fake_dimap(output, band_names=_fake_export_ifg_bands(secondary_date))
+        elif graph_name == "create_stack_product.xml":
+            output = Path(job.parameters["outputFile"])
+            _write_fake_dimap(output, band_names=_fake_final_coreg_bands())
+        elif graph_name == "band_merge_product_set.xml":
+            output = Path(job.parameters["outputFile"])
+            if output.name.endswith("_ifg_final.dim"):
+                export_coreg_dir = output.parent.parent / "coreg_pairs_export"
+                export_ifg_dir = output.parent.parent / "ifg_pairs_export"
+                ifg_stack_input_dir = output.parent.parent / "ifg_stack_inputs"
+
+                observed_final_ifg_inputs["first_export_exists"] = runner._export_ready_ifg_product(
+                    export_ifg_dir,
+                    master,
+                    secondaries[0],
+                ).exists()
+                observed_final_ifg_inputs["later_exports_removed"] = all(
+                    not runner._export_ready_ifg_product(export_ifg_dir, master, secondary).exists()
+                    for secondary in secondaries[1:]
+                )
+                observed_final_ifg_inputs["stack_inputs_exist"] = all(
+                    runner._ifg_stack_input_product(ifg_stack_input_dir, master, secondary).exists()
+                    for secondary in secondaries[1:]
+                )
+                observed_final_ifg_inputs["coreg_exports_removed"] = all(
+                    not runner._export_ready_coreg_product(export_coreg_dir, master, secondary).exists()
+                    for secondary in secondaries
+                )
+                _write_fake_dimap(output, band_names=_fake_final_ifg_bands())
+            else:
+                _write_fake_dimap(output, band_names=_fake_final_coreg_bands())
+        else:
+            for key in ("outputFile", "coregOutputFile", "ifgOutputFile"):
+                if key in job.parameters:
+                    _write_fake_dimap(Path(job.parameters[key]))
+        if "outputDir" in job.parameters:
+            output_dir = Path(job.parameters["outputDir"])
+            output_dir.mkdir(parents=True, exist_ok=True)
+            for name in ("rslc", "diff0", "geo"):
+                subdir = output_dir / name
+                subdir.mkdir(exist_ok=True)
+                (subdir / "ok.txt").write_text("ok")
+
+    monkeypatch.setattr(runner, "_run_graph", fake_run_graph)
+
+    outputs = runner.run_stack(context, manifest, stack, "POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))")
+
+    assert observed_final_ifg_inputs == {
+        "first_export_exists": True,
+        "later_exports_removed": True,
+        "stack_inputs_exist": True,
+        "coreg_exports_removed": True,
+    }
+    export_ifg_dir = outputs.stack_dir / "stamps_export_inputs" / "ifg_pairs_export"
+    ifg_stack_input_dir = outputs.stack_dir / "stamps_export_inputs" / "ifg_stack_inputs"
+    assert not runner._export_ready_ifg_product(export_ifg_dir, master, secondaries[0]).exists()
+    assert all(not runner._export_ready_ifg_product(export_ifg_dir, master, secondary).exists() for secondary in secondaries[1:])
+    assert all(not runner._ifg_stack_input_product(ifg_stack_input_dir, master, secondary).exists() for secondary in secondaries[1:])
+    assert sum(record.checkpoint == "final_stack_input_validated" for record in outputs.cleanup_records) == 3
+    assert any(
+        record.checkpoint == "final_export_product_validated"
+        and record.path == runner._export_ready_ifg_product(export_ifg_dir, master, secondaries[0])
+        for record in outputs.cleanup_records
+    )
+
+
+def test_run_stack_reuse_final_coreg_purges_coreg_exports_before_final_ifg_merge(tmp_path, monkeypatch) -> None:
+    root = Path(__file__).resolve().parents[2]
+    config = load_config(root / "configs" / "psi_casablanca_slc_minimal.yaml")
+    config.artifact_lifecycle.purge_prepared_after_coreg = False
+    config.artifact_lifecycle.purge_snap_intermediates_after_export = False
+    runner = SnapGraphRunner(config)
+    monkeypatch.setattr(runner, "validate_environment", lambda: None)
+    monkeypatch.setattr(runner, "_has_reusable_export", _has_fake_export)
+    context = RunContext.create(config, tmp_path)
+    context.ensure_directories()
+    manifest = _build_manifest()
+    stack = config.stacks[0]
+    master = manifest.scenes[2]
+    secondaries = [manifest.scenes[0], manifest.scenes[1], manifest.scenes[3], manifest.scenes[4]]
+
+    stack_dir = context.snap_dir / manifest.stack_id
+    export_inputs_dir = stack_dir / "stamps_export_inputs"
+    export_coreg_dir = export_inputs_dir / "coreg_pairs_export"
+    export_ifg_dir = export_inputs_dir / "ifg_pairs_export"
+    ifg_stack_input_dir = export_inputs_dir / "ifg_stack_inputs"
+    final_product_dir = export_inputs_dir / "final_products"
+
+    final_coreg = runner._final_coreg_export_product(final_product_dir, master)
+    _write_fake_dimap(final_coreg, band_names=_fake_final_coreg_bands())
+    first_secondary = secondaries[0]
+    _write_fake_dimap(
+        runner._export_ready_ifg_product(export_ifg_dir, master, first_secondary),
+        band_names=_fake_export_ifg_bands(first_secondary.acquisition_date),
+    )
+    for secondary in secondaries:
+        _write_fake_dimap(
+            runner._export_ready_coreg_product(export_coreg_dir, master, secondary),
+            band_names=_fake_dual_pol_coreg_bands(secondary.acquisition_date),
+        )
+    for secondary in secondaries[1:]:
+        _write_fake_dimap(
+            runner._export_ready_ifg_product(export_ifg_dir, master, secondary),
+            band_names=_fake_export_ifg_bands(secondary.acquisition_date),
+        )
+        _write_fake_dimap(
+            runner._ifg_stack_input_product(ifg_stack_input_dir, master, secondary),
+            band_names=[
+                f"i_ifg_VV_{_scene_date_token(master.acquisition_date)}_{_scene_date_token(secondary.acquisition_date)}",
+                f"q_ifg_VV_{_scene_date_token(master.acquisition_date)}_{_scene_date_token(secondary.acquisition_date)}",
+            ],
+        )
+
+    observed_final_ifg_inputs: dict[str, bool] = {}
+
+    def fake_run_graph(job):
+        graph_name = job.graph_path.name
+        if graph_name == "band_merge_product_set.xml":
+            output = Path(job.parameters["outputFile"])
+            observed_final_ifg_inputs["coreg_exports_removed"] = all(
+                not runner._export_ready_coreg_product(export_coreg_dir, master, secondary).exists()
+                for secondary in secondaries
+            )
+            observed_final_ifg_inputs["first_export_exists"] = runner._export_ready_ifg_product(
+                export_ifg_dir,
+                master,
+                first_secondary,
+            ).exists()
+            observed_final_ifg_inputs["later_exports_removed"] = all(
+                not runner._export_ready_ifg_product(export_ifg_dir, master, secondary).exists()
+                for secondary in secondaries[1:]
+            )
+            observed_final_ifg_inputs["stack_inputs_exist"] = all(
+                runner._ifg_stack_input_product(ifg_stack_input_dir, master, secondary).exists()
+                for secondary in secondaries[1:]
+            )
+            _write_fake_dimap(output, band_names=_fake_final_ifg_bands())
+        elif graph_name == "stamps_export.xml":
+            output_dir = Path(job.parameters["outputDir"])
+            output_dir.mkdir(parents=True, exist_ok=True)
+            for name in ("rslc", "diff0", "geo"):
+                subdir = output_dir / name
+                subdir.mkdir(exist_ok=True)
+                (subdir / "ok.txt").write_text("ok")
+        else:
+            raise AssertionError(f"Unexpected graph during reused final-coreg assembly: {graph_name}")
+
+    monkeypatch.setattr(runner, "_run_graph", fake_run_graph)
+
+    outputs = runner.run_stack(context, manifest, stack, "POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))")
+
+    assert observed_final_ifg_inputs == {
+        "coreg_exports_removed": True,
+        "first_export_exists": True,
+        "later_exports_removed": True,
+        "stack_inputs_exist": True,
+    }
+    assert not any(
+        runner._export_ready_coreg_product(export_coreg_dir, master, secondary).exists() for secondary in secondaries
+    )
+    assert not runner._export_ready_ifg_product(export_ifg_dir, master, first_secondary).exists()
+    assert all(not runner._ifg_stack_input_product(ifg_stack_input_dir, master, secondary).exists() for secondary in secondaries[1:])
+    assert any(
+        record.checkpoint == "final_export_product_validated"
+        and record.path == runner._export_ready_coreg_product(export_coreg_dir, master, first_secondary)
+        for record in outputs.cleanup_records
+    )
+    assert (final_product_dir / f"{master.acquisition_date}_ifg_final.dim").exists()
 
 
 def test_final_coreg_contract_validation_rejects_repeated_master_aliases(tmp_path) -> None:

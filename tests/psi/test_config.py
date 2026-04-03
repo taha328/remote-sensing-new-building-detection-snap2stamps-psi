@@ -24,6 +24,7 @@ def test_load_psi_config() -> None:
     assert config.stamps.range_patches == 2
     assert config.stamps.azimuth_patches == 2
     assert config.stamps.max_parallel_patch_workers == 2
+    assert config.stamps.merge_resample_size == 0
     assert config.artifact_lifecycle.purge_master_prepared_after_pair is True
     assert config.artifact_lifecycle.purge_secondary_prepared_after_pair is True
     assert config.artifact_lifecycle.purge_pair_products_after_merged_coreg is True
@@ -75,3 +76,23 @@ def test_load_minimal_psi_config_uses_single_capped_stack() -> None:
     assert config.stamps.range_patches == 4
     assert config.stamps.azimuth_patches == 3
     assert config.stamps.max_parallel_patch_workers == 1
+    assert config.stamps.merge_resample_size == 100
+    assert config.psi.method == "cdpsi"
+    assert config.psi.minimum_subset_images == 3
+    assert config.psi.thresholding_mode == "gaussian_3sigma"
+    assert config.psi.sigma_multiplier == 3.0
+
+
+def test_load_minimal_cdpsi_six_scene_config_uses_smallest_valid_stack() -> None:
+    config = load_config(Path("configs/psi_casablanca_slc_cdpsi_min6.yaml"))
+
+    assert config.project == "Casablanca PSI CDPSI Minimal 6 Scene"
+    assert len(config.stacks) == 1
+    assert config.stacks[0].id == "asc_rel147_vv"
+    assert config.stacks[0].min_scenes == 6
+    assert config.stacks[0].scene_limit == 6
+    assert config.stacks[0].master_date.isoformat() == "2023-09-22"
+    assert config.psi.method == "cdpsi"
+    assert config.psi.minimum_subset_images == 3
+    assert config.psi.thresholding_mode == "gaussian_3sigma"
+    assert config.psi.sigma_multiplier == 3.0

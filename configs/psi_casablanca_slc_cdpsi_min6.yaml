@@ -1,4 +1,4 @@
-project: Casablanca PSI New-Building Detection
+project: Casablanca PSI CDPSI Minimal 6 Scene
 
 aoi:
   name: casablanca-city
@@ -12,8 +12,8 @@ acquisition:
   s2_catalog_url: https://earth-search.aws.element84.com/v1
   s2_collection: sentinel-2-l2a
   time_window:
-    start: 2019-01-01
-    end: 2025-12-31
+    start: 2023-08-01
+    end: 2023-11-30
   s2_time_window:
     start: 2019-01-01
     end: 2025-12-31
@@ -37,7 +37,7 @@ acquisition:
   slc_asset_priority: [product, safe_manifest]
 
 dem:
-  path: data/reference/dem/copdem_30m_casablanca.tif
+  path: data/reference/dem/copdem_30m_casablanca_snap.tif
   vertical_datum: EGM96
   resampling: BILINEAR_INTERPOLATION
 
@@ -48,14 +48,8 @@ stacks:
     iw_swaths: [IW1, IW2, IW3]
     polarization: VV
     master_date: 2023-09-22
-    min_scenes: 24
-  - id: desc_rel154_vv
-    direction: descending
-    relative_orbit: 154
-    iw_swaths: [IW1, IW2, IW3]
-    polarization: VV
-    master_date: 2023-09-23
-    min_scenes: 24
+    min_scenes: 6
+    scene_limit: 6
 
 snap:
   gpt_path: /Applications/esa-snap/bin/gpt
@@ -63,8 +57,9 @@ snap:
   graph_root: resources/snap_graphs
   orbit_source: precise
   user_dir: data/cache/snap-gpt-userdir
-  cache_size_mb: 8192
-  java_options: [-Xms4G, -Xmx24G]
+  cache_size_mb: 2048
+  java_options: [-Xms2G, -Xmx8G]
+  clear_tile_cache_after_row: true
   default_tile_size_px: 512
   subset_to_aoi: true
   write_intermediate_geotiff: false
@@ -80,11 +75,12 @@ stamps:
   weed_standard_dev: 1.0
   unwrap_method: 3D
   small_baseline_mode: false
-  range_patches: 2
-  azimuth_patches: 2
-  max_parallel_patch_workers: 2
+  range_patches: 4
+  azimuth_patches: 3
+  max_parallel_patch_workers: 1
   range_overlap: 50
   azimuth_overlap: 50
+  merge_resample_size: 100
   mask_file: null
 
 psi:
